@@ -11,3 +11,4 @@ class JobStatus(StrEnum):
 class NoteType(StrEnum):
     BASIC = "basic"
     CLOZE = "cloze"
+    DIAGRAM = "diagram"

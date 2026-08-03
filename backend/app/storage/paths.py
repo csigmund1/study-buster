@@ -3,6 +3,7 @@
 Layout:
     DATA_DIR/jobs/{job_id}/original.pdf
     DATA_DIR/jobs/{job_id}/pages/page_{n}.png
+    DATA_DIR/jobs/{job_id}/card_images/{card_id}/{question,answer}.png
 """
 
 from pathlib import Path
@@ -36,6 +37,16 @@ def ensure_job_dir(settings: Settings, job_id: int) -> Path:
     directory = job_dir(settings, job_id)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
+
+
+def card_images_dir(settings: Settings, job_id: int, card_id: int) -> Path:
+    """Directory holding a diagram card's composed question/answer images."""
+    return job_dir(settings, job_id) / "card_images" / str(card_id)
+
+
+def card_image_path(settings: Settings, job_id: int, card_id: int, side: str) -> Path:
+    """Path for a composed diagram-card image. `side` is 'question' or 'answer'."""
+    return card_images_dir(settings, job_id, card_id) / f"{side}.png"
 
 
 def exports_dir(settings: Settings, job_id: int) -> Path:

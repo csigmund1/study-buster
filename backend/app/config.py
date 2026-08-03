@@ -16,6 +16,9 @@ DEFAULT_MAX_PDF_PAGES = 100
 DEFAULT_CARD_GENERATOR = "mock"
 DEFAULT_PAGE_GROUP_SIZE = 10
 DEFAULT_RENDER_MAX_EDGE_PX = 1400
+DEFAULT_DIAGRAM_DETECTOR = "mock"
+DEFAULT_DIAGRAM_DETECTION_MODEL = "claude-haiku-4-5"
+DEFAULT_DETECTION_MAX_EDGE_PX = 1024
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,9 @@ class Settings:
     card_generator: str
     page_group_size: int
     render_max_edge_px: int
+    diagram_detector: str
+    diagram_detection_model: str
+    detection_max_edge_px: int
 
 
 def get_settings() -> Settings:
@@ -39,6 +45,13 @@ def get_settings() -> Settings:
     render_max_edge_px = int(
         os.environ.get("RENDER_MAX_EDGE_PX", str(DEFAULT_RENDER_MAX_EDGE_PX))
     )
+    diagram_detector = os.environ.get("DIAGRAM_DETECTOR", DEFAULT_DIAGRAM_DETECTOR)
+    diagram_detection_model = os.environ.get(
+        "DIAGRAM_DETECTION_MODEL", DEFAULT_DIAGRAM_DETECTION_MODEL
+    )
+    detection_max_edge_px = int(
+        os.environ.get("DETECTION_MAX_EDGE_PX", str(DEFAULT_DETECTION_MAX_EDGE_PX))
+    )
     return Settings(
         data_dir=data_dir,
         database_url=database_url,
@@ -47,4 +60,7 @@ def get_settings() -> Settings:
         card_generator=card_generator,
         page_group_size=page_group_size,
         render_max_edge_px=render_max_edge_px,
+        diagram_detector=diagram_detector,
+        diagram_detection_model=diagram_detection_model,
+        detection_max_edge_px=detection_max_edge_px,
     )

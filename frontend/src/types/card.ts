@@ -1,4 +1,21 @@
-export type NoteType = 'basic' | 'cloze'
+export type NoteType = 'basic' | 'cloze' | 'diagram'
+
+/** Page-normalized box: floats in `[0, 1]` over the full rendered page. */
+export interface Box {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+/** Image-occlusion geometry for a `diagram` card. Read-only in Phase 1. */
+export interface Occlusion {
+  direction: 'identify' | 'locate'
+  label: string
+  crop_box: Box
+  label_box: Box
+  mask_boxes: Box[]
+}
 
 export interface CardDraft {
   id: number
@@ -9,6 +26,7 @@ export interface CardDraft {
   cloze_text: string | null
   source_page: number
   needs_page_image: boolean
+  occlusion: Occlusion | null
   created_at: string
   updated_at: string
 }

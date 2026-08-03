@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from sqlalchemy import JSON, Column
 from sqlmodel import Field, SQLModel
 
 from app.models.enums import NoteType
@@ -16,6 +17,8 @@ class CardDraft(SQLModel, table=True):
     front: str | None = Field(default=None)
     back: str | None = Field(default=None)
     cloze_text: str | None = Field(default=None)
+    # `diagram` cards only: an `Occlusion` serialized to JSON (see models/occlusion.py).
+    occlusion: dict | None = Field(default=None, sa_column=Column(JSON))
     source_page: int | None = Field(default=None)
     needs_page_image: bool = Field(default=False)
     is_deleted: bool = Field(default=False)

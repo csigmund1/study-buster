@@ -3,7 +3,7 @@
 from typing import Protocol
 
 from app.services.card_generation.page_group import PageGroup
-from app.services.card_generation.schemas import GeneratedCard
+from app.services.card_generation.schemas import GeneratedCards
 
 
 class CardGenerationError(RuntimeError):
@@ -11,4 +11,6 @@ class CardGenerationError(RuntimeError):
 
 
 class CardGenerator(Protocol):
-    def generate(self, group: PageGroup) -> list[GeneratedCard]: ...
+    def generate(self, group: PageGroup) -> GeneratedCards:
+        """Return the group's cards plus which of its pages hold labeled diagrams."""
+        ...

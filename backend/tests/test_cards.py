@@ -1,8 +1,9 @@
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app.config import get_settings
-from app.models import CardDraft, Job, JobStatus, NoteType
-from app.storage import session_for
+from app.models import Box, CardDraft, Direction, Job, JobStatus, NoteType, Occlusion
+from app.storage import card_image_path, session_for
 
 
 def _create_job_and_card(
@@ -112,3 +113,101 @@ def test_deleted_card_excluded_from_job_cards_list(client: TestClient) -> None:
     cards_response = client.get(f"/jobs/{job_id}/cards")
     assert cards_response.status_code == 200
     assert cards_response.json() == []
+
+
+def _create_diagram_card(*, with_images: bool = True) -> tuple[int, int]:
+    """Insert a Job + a diagram CardDraft with an occlusion payload, optionally
+    writing composed question/answer images to their expected paths."""
+    settings = get_settings()
+    occ = Occlusion(
+        direction=Direction.IDENTIFY,
+        label="Thyroid gland",
+        crop_box=Box(left=0.1, top=0.1, width=0.8, height=0.8),
+        label_box=Box(left=0.3, top=0.3, width=0.2, height=0.1),
+        mask_boxes=[Box(left=0.3, top=0.3, width=0.2, height=0.1)],
+    )
+    session = session_for(settings)
+    try:
+        job = Job(deck_name="Anatomy", pdf_path="", status=JobStatus.READY)
+        session.add(job)
+        session.commit()
+        session.refresh(job)
+        assert job.id is not None
+
+        card = CardDraft(
+            job_id=job.id,
+            note_type=NoteType.DIAGRAM,
+            front="What is this?",
+            back="Thyroid gland",
+            occlusion=occ.model_dump(mode="json"),
+            source_page=2,
+        )
+        session.add(card)
+        session.commit()
+        session.refresh(card)
+        assert card.id is not None
+
+        if with_images:
+            for side in ("question", "answer"):
+                path = card_image_path(settings, job.id, card.id, side)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                Image.new("RGB", (60, 40), "white").save(path)
+
+        return job.id, card.id
+    finally:
+        session.close()
+
+
+def test_diagram_card_edit_text_succeeds(client: TestClient) -> None:
+    _job_id, card_id = _create_diagram_card()
+
+    response = client.put(f"/cards/{card_id}", json={"front": "Name it", "back": "Thyroid"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["front"] == "Name it"
+    assert body["back"] == "Thyroid"
+    assert body["note_type"] == "diagram"
+    assert body["occlusion"] is not None
+
+
+def test_diagram_card_cannot_switch_note_type(client: TestClient) -> None:
+    _job_id, card_id = _create_diagram_card(with_images=False)
+
+    response = client.put(
+        f"/cards/{card_id}", json={"note_type": "basic", "front": "a", "back": "b"}
+    )
+
+    assert response.status_code == 422
+
+
+def test_basic_card_cannot_switch_to_diagram(client: TestClient) -> None:
+    _job_id, card_id = _create_job_and_card()
+
+    response = client.put(f"/cards/{card_id}", json={"note_type": "diagram"})
+
+    assert response.status_code == 422
+
+
+def test_diagram_image_endpoint_serves_both_sides(client: TestClient) -> None:
+    _job_id, card_id = _create_diagram_card()
+
+    for side in ("question", "answer"):
+        response = client.get(f"/cards/{card_id}/image", params={"side": side})
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/png"
+        assert response.content.startswith(b"\x89PNG")
+
+
+def test_diagram_image_endpoint_rejects_bad_side(client: TestClient) -> None:
+    _job_id, card_id = _create_diagram_card()
+
+    assert client.get(f"/cards/{card_id}/image", params={"side": "top"}).status_code == 400
+    assert client.get(f"/cards/{card_id}/image").status_code == 400
+
+
+def test_image_endpoint_404_for_non_diagram_card(client: TestClient) -> None:
+    _job_id, card_id = _create_job_and_card()
+
+    response = client.get(f"/cards/{card_id}/image", params={"side": "question"})
+    assert response.status_code == 404

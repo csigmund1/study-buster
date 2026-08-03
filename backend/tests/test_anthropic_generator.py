@@ -39,16 +39,19 @@ def test_generate_composes_request_and_returns_parsed_cards(
     expected_cards = [
         GeneratedCard(note_type="basic", front="Q", back="A", source_page=3),
     ]
+    parsed = GeneratedCards(cards=expected_cards, diagram_pages=[4])
 
     def fake_parse(**kwargs: Any) -> _FakeResponse:
         captured.update(kwargs)
-        return _FakeResponse(GeneratedCards(cards=expected_cards))
+        return _FakeResponse(parsed)
 
     monkeypatch.setattr(generator._client.messages, "parse", fake_parse)
 
     result = generator.generate(group)
 
-    assert result == expected_cards
+    assert result == parsed
+    assert result.cards == expected_cards
+    assert result.diagram_pages == [4]
     assert captured["model"] == MODEL
     assert captured["output_format"] is GeneratedCards
     assert captured["max_tokens"] == 8192

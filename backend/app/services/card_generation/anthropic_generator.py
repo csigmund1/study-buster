@@ -7,7 +7,7 @@ from anthropic.types import ImageBlockParam, TextBlockParam
 
 from app.services.card_generation.base import CardGenerationError
 from app.services.card_generation.page_group import PageGroup
-from app.services.card_generation.schemas import GeneratedCard, GeneratedCards
+from app.services.card_generation.schemas import GeneratedCards
 
 MODEL = "claude-haiku-4-5"
 MAX_TOKENS = 8192
@@ -34,6 +34,12 @@ label — never invent or renumber pages.
 seeing the slide's visual (a diagram, chart, or figure) — not for plain text facts.
 - Let the number of cards follow how much teachable content is on the pages; there \
 is no fixed quota, and pages with little content may yield zero cards.
+
+Also set `diagram_pages` to the list of real PDF page numbers (from the "Page N" \
+labels) that contain a labeled diagram — a figure whose parts are named by text \
+connected to the drawing with arrows or leader lines. Use the page number, not \
+the position in the group. Omit pages that only have prose, bullet lists, or \
+unlabeled images. These pages get a dedicated, more detailed detection pass later.
 """
 
 
@@ -41,7 +47,7 @@ class AnthropicCardGenerator:
     def __init__(self) -> None:
         self._client = anthropic.Anthropic()
 
-    def generate(self, group: PageGroup) -> list[GeneratedCard]:
+    def generate(self, group: PageGroup) -> GeneratedCards:
         content: list[TextBlockParam | ImageBlockParam] = []
         for page in group.pages:
             content.append({"type": "text", "text": f"Page {page.page_number}"})
@@ -92,4 +98,4 @@ class AnthropicCardGenerator:
             raise CardGenerationError(
                 "Card generation response could not be parsed into the expected schema."
             )
-        return parsed.cards
+        return parsed

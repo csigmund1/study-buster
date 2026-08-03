@@ -3,6 +3,7 @@ from datetime import datetime
 from pydantic import BaseModel
 
 from app.models.enums import NoteType
+from app.models.occlusion import Occlusion
 
 
 class CardDraftRead(BaseModel):
@@ -12,6 +13,7 @@ class CardDraftRead(BaseModel):
     front: str | None
     back: str | None
     cloze_text: str | None
+    occlusion: Occlusion | None
     source_page: int | None
     needs_page_image: bool
     created_at: datetime

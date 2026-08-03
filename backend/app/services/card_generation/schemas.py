@@ -16,3 +16,7 @@ class GeneratedCard(BaseModel):
 
 class GeneratedCards(BaseModel):
     cards: list[GeneratedCard]
+    # Real PDF page numbers (from the "Page N" labels) in this group that contain a
+    # labeled diagram — the cheap first-tier gate. Only these pages get a dedicated
+    # (more expensive) diagram-detection call downstream.
+    diagram_pages: list[int] = []

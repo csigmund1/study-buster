@@ -32,3 +32,10 @@ def validate_card_fields(
             raise CardValidationError(
                 "Cloze cards require non-empty 'cloze_text' with valid {{c1::...}} syntax."
             )
+    elif note_type == NoteType.DIAGRAM:
+        # Diagram cards carry question/answer text in front/back; the occlusion
+        # geometry is validated separately (services/diagram_detection).
+        if not front or not front.strip():
+            raise CardValidationError("Diagram cards require a non-empty 'front'.")
+        if not back or not back.strip():
+            raise CardValidationError("Diagram cards require a non-empty 'back'.")

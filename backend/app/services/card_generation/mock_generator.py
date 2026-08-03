@@ -1,7 +1,7 @@
 """Deterministic fixture generator — zero-cost, no I/O beyond the group it is given."""
 
 from app.services.card_generation.page_group import PageGroup
-from app.services.card_generation.schemas import GeneratedCard
+from app.services.card_generation.schemas import GeneratedCard, GeneratedCards
 
 
 class MockCardGenerator:
@@ -9,13 +9,15 @@ class MockCardGenerator:
 
     For every ~5 pages in the group, emits 2 basic cards + 1 cloze card, referencing
     real page numbers. Exactly one card in the group is flagged `needs_page_image`.
+    The group's first page is flagged as a labeled diagram so the diagram-detection
+    path is exercised end-to-end in mock mode.
     """
 
-    def generate(self, group: PageGroup) -> list[GeneratedCard]:
+    def generate(self, group: PageGroup) -> GeneratedCards:
         cards: list[GeneratedCard] = []
         pages = group.pages
         if not pages:
-            return cards
+            return GeneratedCards(cards=cards, diagram_pages=[])
 
         chunk_size = 5
         flagged_one = False
@@ -55,4 +57,4 @@ class MockCardGenerator:
                 )
             )
 
-        return cards
+        return GeneratedCards(cards=cards, diagram_pages=[pages[0].page_number])

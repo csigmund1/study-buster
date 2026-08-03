@@ -4,7 +4,7 @@ import { http, HttpResponse } from 'msw'
 import { describe, expect, it, vi } from 'vitest'
 import { renderWithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
-import { API_URL, makeCard } from '../test/handlers'
+import { API_URL, makeCard, makeOcclusion } from '../test/handlers'
 import { CardEditor } from './CardEditor'
 
 describe('CardEditor', () => {
@@ -107,6 +107,75 @@ describe('CardEditor', () => {
 
     await vi.waitFor(() =>
       expect(receivedBody).toMatchObject({ note_type: 'cloze', cloze_text: '{{c1::Helicase}}' }),
+    )
+  })
+
+  it('renders a diagram card with question image, no note-type control, and reveals the answer', async () => {
+    let receivedBody: unknown = null
+    server.use(
+      http.put(`${API_URL}/cards/:cardId`, async ({ request }) => {
+        receivedBody = await request.json()
+        return HttpResponse.json(
+          makeCard({
+            note_type: 'diagram',
+            front: 'What structure is this?',
+            back: 'Mitochondrion',
+            occlusion: makeOcclusion(),
+          }),
+        )
+      }),
+    )
+
+    const diagramCard = makeCard({
+      id: 20,
+      note_type: 'diagram',
+      front: 'What structure is this?',
+      back: 'Helicase',
+      occlusion: makeOcclusion(),
+    })
+
+    const user = userEvent.setup()
+    renderWithProviders(<CardEditor jobId={1} card={diagramCard} />)
+
+    expect(screen.getByText('Diagram')).toBeInTheDocument()
+    expect(
+      screen.queryByRole('radio', { name: /basic/i }),
+    ).not.toBeInTheDocument()
+    expect(
+      screen.queryByRole('radio', { name: /cloze/i }),
+    ).not.toBeInTheDocument()
+
+    const questionImage = screen.getByAltText('Diagram question')
+    expect(questionImage).toHaveAttribute(
+      'src',
+      `${API_URL}/cards/20/image?side=question`,
+    )
+
+    expect(screen.getByRole('button', { name: /reveal answer/i })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: /reveal answer/i }))
+
+    const answerImage = await screen.findByAltText('Diagram answer')
+    expect(answerImage).toHaveAttribute(
+      'src',
+      `${API_URL}/cards/20/image?side=answer`,
+    )
+    expect(screen.getAllByText('Helicase').length).toBeGreaterThan(0)
+
+    const frontInput = screen.getByLabelText(/front/i)
+    await user.clear(frontInput)
+    await user.type(frontInput, 'What structure is this?')
+    const backInput = screen.getByLabelText(/back/i)
+    await user.clear(backInput)
+    await user.type(backInput, 'Mitochondrion')
+    await user.click(screen.getByRole('button', { name: /save/i }))
+
+    await vi.waitFor(() =>
+      expect(receivedBody).toMatchObject({
+        note_type: 'diagram',
+        front: 'What structure is this?',
+        back: 'Mitochondrion',
+      }),
     )
   })
 })

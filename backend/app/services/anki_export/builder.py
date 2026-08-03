@@ -15,14 +15,53 @@ from pathlib import Path
 import genanki
 
 from app.config import Settings
-from app.models import CardDraft, Job, NoteType
-from app.services.anki_export.models import BASIC_MODEL, CLOZE_MODEL
+from app.models import CardDraft, Job, NoteType, Occlusion
+from app.services.anki_export.models import BASIC_MODEL, CLOZE_MODEL, IMAGE_OCCLUSION_MODEL
 from app.services.anki_export.naming import deck_id_for
-from app.storage.paths import page_image_path
+from app.storage.paths import card_image_path, page_image_path
 
 
 def _media_filename(job_id: int, page_number: int, image_path: Path) -> str:
     return f"sb-job{job_id}-page{page_number}{image_path.suffix}"
+
+
+def _diagram_media_filename(job_id: int, card_id: int, image_path: Path) -> str:
+    return f"sb-job{job_id}-card{card_id}{image_path.suffix}"
+
+
+def _diagram_image_media(
+    settings: Settings, job_id: int, card_id: int, media_dir: Path
+) -> tuple[str, Path] | None:
+    """Copy a diagram card's composed answer image into `media_dir`.
+
+    Returns `(media_filename, media_path)`, or `None` if the composed answer
+    image has not been produced yet (e.g. composition has not run).
+    """
+    image_path = card_image_path(settings, job_id, card_id, "answer")
+    if not image_path.is_file():
+        return None
+
+    filename = _diagram_media_filename(job_id, card_id, image_path)
+    media_path = media_dir / filename
+    shutil.copyfile(image_path, media_path)
+    return filename, media_path
+
+
+def _occlusions_field(occlusion: Occlusion) -> str:
+    """Build a single-cloze `Occlusions` field over the target's `label_box` —
+    the label mask itself (there is no separate structure-level box).
+
+    Coordinates are converted from page-normalized to crop-normalized (the
+    Image field holds the cropped card image, not the full page).
+    """
+    crop_box = occlusion.crop_box
+    label_box = occlusion.label_box
+    cl = (label_box.left - crop_box.left) / crop_box.width
+    ct = (label_box.top - crop_box.top) / crop_box.height
+    cw = label_box.width / crop_box.width
+    ch = label_box.height / crop_box.height
+    shape = f"image-occlusion:rect:left={cl:.4f}:top={ct:.4f}:width={cw:.4f}:height={ch:.4f}:oi=1"
+    return f"{{{{c1::{shape}}}}}"
 
 
 def _page_image_media(
@@ -57,6 +96,7 @@ def build_apkg(
     deck = genanki.Deck(deck_id_for(job.deck_name), job.deck_name)
     deck.add_model(BASIC_MODEL)
     deck.add_model(CLOZE_MODEL)
+    deck.add_model(IMAGE_OCCLUSION_MODEL)
 
     media_files: list[str] = []
 
@@ -65,6 +105,26 @@ def build_apkg(
 
         for card in cards:
             if card.is_deleted:
+                continue
+
+            if card.note_type == NoteType.DIAGRAM:
+                if card.id is None:
+                    continue
+                diagram_media = _diagram_image_media(settings, job.id, card.id, media_dir)
+                if diagram_media is None:
+                    continue
+                filename, media_path = diagram_media
+                occlusion = Occlusion.model_validate(card.occlusion)
+                occlusions_field = _occlusions_field(occlusion)
+                image_field = f'<img src="{html.escape(filename)}">'
+                header = html.escape(card.front or "")
+                back_extra = html.escape(card.back or "")
+                media_files.append(str(media_path))
+                note = genanki.Note(
+                    model=IMAGE_OCCLUSION_MODEL,
+                    fields=[occlusions_field, image_field, header, back_extra, ""],
+                )
+                deck.add_note(note)
                 continue
 
             image_media: tuple[str, Path] | None = None

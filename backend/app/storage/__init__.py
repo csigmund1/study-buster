@@ -1,5 +1,7 @@
 from app.storage.database import get_engine, get_session, init_db, session_for
 from app.storage.paths import (
+    card_image_path,
+    card_images_dir,
     ensure_job_dir,
     export_apkg_path,
     exports_dir,
@@ -14,6 +16,8 @@ __all__ = [
     "get_session",
     "init_db",
     "session_for",
+    "card_image_path",
+    "card_images_dir",
     "ensure_job_dir",
     "export_apkg_path",
     "exports_dir",

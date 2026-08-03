@@ -1,6 +1,6 @@
 import { http, HttpResponse } from 'msw'
 import type { Job } from '../types/job'
-import type { CardDraft } from '../types/card'
+import type { CardDraft, Occlusion } from '../types/card'
 
 export const API_URL = 'http://localhost:8000'
 
@@ -28,11 +28,31 @@ export function makeCard(overrides: Partial<CardDraft> = {}): CardDraft {
     cloze_text: null,
     source_page: 7,
     needs_page_image: false,
+    occlusion: null,
     created_at: '2026-08-01T19:02:00Z',
     updated_at: '2026-08-01T19:02:00Z',
     ...overrides,
   }
 }
+
+export function makeOcclusion(overrides: Partial<Occlusion> = {}): Occlusion {
+  return {
+    direction: 'identify',
+    label: 'Helicase',
+    crop_box: { left: 0.2, top: 0.05, width: 0.55, height: 0.9 },
+    label_box: { left: 0.61, top: 0.32, width: 0.15, height: 0.05 },
+    mask_boxes: [{ left: 0.61, top: 0.32, width: 0.15, height: 0.05 }],
+    ...overrides,
+  }
+}
+
+/** A tiny 1x1 transparent PNG, used as a stub image response in tests. */
+const STUB_PNG_BYTES = Uint8Array.from(
+  atob(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  ),
+  (char) => char.charCodeAt(0),
+)
 
 /**
  * Default handlers used across tests. Individual tests can override these
@@ -68,6 +88,13 @@ export const handlers = [
 
   http.delete(`${API_URL}/cards/:cardId`, () => {
     return new HttpResponse(null, { status: 204 })
+  }),
+
+  http.get(`${API_URL}/cards/:cardId/image`, () => {
+    return new HttpResponse(STUB_PNG_BYTES, {
+      status: 200,
+      headers: { 'Content-Type': 'image/png' },
+    })
   }),
 
   http.post(`${API_URL}/jobs/:jobId/export`, () => {
