@@ -2,20 +2,10 @@ import json
 import zipfile
 from io import BytesIO
 
-import httpx
 from fastapi.testclient import TestClient
 
 from app.services.anki_export.naming import deck_id_for, slugify
-
-
-def _upload(
-    client: TestClient, deck_name: str, pdf_bytes: bytes, content_type: str = "application/pdf"
-) -> httpx.Response:
-    return client.post(
-        "/jobs",
-        data={"deck_name": deck_name},
-        files={"file": ("lecture.pdf", pdf_bytes, content_type)},
-    )
+from tests.conftest import _upload
 
 
 def test_export_happy_path_returns_valid_apkg_with_media(

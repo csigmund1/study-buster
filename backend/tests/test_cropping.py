@@ -4,12 +4,8 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from app.models.occlusion import Box
 from app.services.diagram_detection.cropping import FULL_PAGE, derive_crop
-
-
-def _box(left: float, top: float, width: float, height: float) -> Box:
-    return Box(left=left, top=top, width=width, height=height)
+from tests.conftest import _box
 
 
 def _light_page_with_ink(tmp_path: Path, size: tuple[int, int] = (400, 400)) -> Path:

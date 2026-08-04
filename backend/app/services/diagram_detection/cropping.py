@@ -22,7 +22,7 @@ MAX_CROP_AREA_FRACTION = 0.90
 FULL_PAGE = Box(left=0, top=0, width=1, height=1)
 
 
-def _union_box(boxes: list[Box]) -> Box:
+def union_box(boxes: list[Box]) -> Box:
     left = min(box.left for box in boxes)
     top = min(box.top for box in boxes)
     right = max(box.left + box.width for box in boxes)
@@ -47,7 +47,7 @@ def derive_crop(page_image_path: Path, label_boxes: list[Box], hint: Box | None)
     seed_boxes = list(label_boxes)
     if hint is not None:
         seed_boxes.append(hint)
-    seed = _union_box(seed_boxes)
+    seed = union_box(seed_boxes)
 
     with Image.open(page_image_path) as raw_image:
         gray = raw_image.convert("L")

@@ -28,10 +28,7 @@ from app.services.diagram_detection.compose import (
 from app.services.diagram_detection.ocr import OcrEngine, OcrItem
 from app.services.diagram_detection.schemas import DiagramDetection, LabelDetection
 from app.services.pipeline import _build_identify_occlusions, _occlusion_is_valid
-
-
-def _box(left: float, top: float, width: float, height: float) -> Box:
-    return Box(left=left, top=top, width=width, height=height)
+from tests.conftest import _box
 
 
 def _label(text: str, label_box: Box) -> LabelDetection:

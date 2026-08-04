@@ -1,16 +1,7 @@
-import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-
-def _upload(
-    client: TestClient, deck_name: str, pdf_bytes: bytes, content_type: str = "application/pdf"
-) -> httpx.Response:
-    return client.post(
-        "/jobs",
-        data={"deck_name": deck_name},
-        files={"file": ("lecture.pdf", pdf_bytes, content_type)},
-    )
+from tests.conftest import _upload
 
 
 def test_upload_happy_path_reaches_ready(client: TestClient, minimal_pdf_bytes: bytes) -> None:

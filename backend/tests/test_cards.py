@@ -2,8 +2,9 @@ from fastapi.testclient import TestClient
 from PIL import Image
 
 from app.config import get_settings
-from app.models import Box, CardDraft, Direction, Job, JobStatus, NoteType, Occlusion
+from app.models import CardDraft, Job, JobStatus, NoteType
 from app.storage import card_image_path, session_for
+from tests.conftest import sample_occlusion
 
 
 def _create_job_and_card(
@@ -119,13 +120,7 @@ def _create_diagram_card(*, with_images: bool = True) -> tuple[int, int]:
     """Insert a Job + a diagram CardDraft with an occlusion payload, optionally
     writing composed question/answer images to their expected paths."""
     settings = get_settings()
-    occ = Occlusion(
-        direction=Direction.IDENTIFY,
-        label="Thyroid gland",
-        crop_box=Box(left=0.1, top=0.1, width=0.8, height=0.8),
-        label_box=Box(left=0.3, top=0.3, width=0.2, height=0.1),
-        mask_boxes=[Box(left=0.3, top=0.3, width=0.2, height=0.1)],
-    )
+    occ = sample_occlusion()
     session = session_for(settings)
     try:
         job = Job(deck_name="Anatomy", pdf_path="", status=JobStatus.READY)

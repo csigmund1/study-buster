@@ -1,9 +1,11 @@
 from collections.abc import Iterator
 from pathlib import Path
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models import Box, Direction, Occlusion
 from app.storage.database import _engine_cache
 
 
@@ -37,3 +39,27 @@ def minimal_pdf_bytes() -> bytes:
         b"trailer<</Root 1 0 R>>\n"
         b"%%EOF\n"
     )
+
+
+def _upload(
+    client: TestClient, deck_name: str, pdf_bytes: bytes, content_type: str = "application/pdf"
+) -> httpx.Response:
+    return client.post(
+        "/jobs",
+        data={"deck_name": deck_name},
+        files={"file": ("lecture.pdf", pdf_bytes, content_type)},
+    )
+
+
+def sample_occlusion() -> Occlusion:
+    return Occlusion(
+        direction=Direction.IDENTIFY,
+        label="Thyroid gland",
+        crop_box=Box(left=0.1, top=0.1, width=0.8, height=0.8),
+        label_box=Box(left=0.3, top=0.3, width=0.2, height=0.1),
+        mask_boxes=[Box(left=0.3, top=0.3, width=0.2, height=0.1)],
+    )
+
+
+def _box(left: float, top: float, width: float, height: float) -> Box:
+    return Box(left=left, top=top, width=width, height=height)
