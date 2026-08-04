@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from app.models.occlusion import Box
 from app.services.diagram_detection.base import DetectionPage, DiagramDetectionError
+from app.services.diagram_detection.cropping import union_box
 from app.services.diagram_detection.ocr import OcrEngine, OcrItem
 from app.services.diagram_detection.schemas import DiagramDetection, LabelDetection
 
@@ -80,14 +81,6 @@ def _build_item_list(items: list[OcrItem]) -> str:
     return "\n".join(lines)
 
 
-def _union_box(boxes: list[Box]) -> Box:
-    left = min(box.left for box in boxes)
-    top = min(box.top for box in boxes)
-    right = max(box.left + box.width for box in boxes)
-    bottom = max(box.top + box.height for box in boxes)
-    return Box(left=left, top=top, width=right - left, height=bottom - top)
-
-
 def _union_results(
     passes: list[ClassifierResult], num_items: int
 ) -> tuple[bool, Box | None, list[tuple[frozenset[int], str]]]:
@@ -143,7 +136,7 @@ class AnthropicDiagramDetector:
         labels: list[LabelDetection] = []
         for indices, label_text in groups:
             boxes = [items[i].box for i in indices]
-            labels.append(LabelDetection(text=label_text, label_box=_union_box(boxes)))
+            labels.append(LabelDetection(text=label_text, label_box=union_box(boxes)))
 
         if is_labeled_diagram and len(labels) <= max(1, len(items) // 10):
             logger.warning(

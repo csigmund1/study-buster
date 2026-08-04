@@ -84,7 +84,11 @@ React (RTK Query) -> FastAPI
   page-image preview renders for flagged cards; export succeeds.
 - Cloze note type is supported end-to-end (schema, validation, export), but
   the real model has so far only produced Basic cards on the test set.
-
+- Diagram (image-occlusion) cards work end-to-end in real mode: Apple Vision
+  OCR + double-pass Haiku classifier → deterministic crop → composed
+  highlight/reveal images → native Image Occlusion export. Verified on a
+  7-page annotated deck (`spikes/inputs/test_notes.pdf`).
+  
 ## Future Work
 - Full mask editor for image-occlusion cards in Review (drag/resize/add/remove
   masks on a canvas overlay); the image-card MVP is preview + accept/delete only.

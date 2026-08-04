@@ -22,6 +22,12 @@ interface CardEditorProps {
   card: CardDraft
 }
 
+const NOTE_TYPE_BADGE: Record<NoteType, { color: string; label: string }> = {
+  basic: { color: 'blue', label: 'Basic' },
+  cloze: { color: 'grape', label: 'Cloze' },
+  diagram: { color: 'teal', label: 'Diagram' },
+}
+
 /**
  * Editable card row. Keeps its own local form state (front/back or
  * cloze_text depending on the locally-selected note type) so edits aren't
@@ -65,104 +71,49 @@ export function CardEditor({ jobId, card }: CardEditorProps) {
   }
 
   const saveErrorMessage = saveError ? getErrorDetail(saveError) : null
-
-  if (isDiagram) {
-    return (
-      <Card withBorder padding="md" data-testid={`card-${card.id}`}>
-        <Stack gap="sm">
-          <Group justify="space-between">
-            <Badge color="teal" variant="light">
-              Diagram
-            </Badge>
-            <Text size="sm" c="dimmed">
-              Page {card.source_page}
-            </Text>
-          </Group>
-
-          <Image
-            src={`${API_BASE_URL}/cards/${card.id}/image?side=question`}
-            alt="Diagram question"
-            fit="contain"
-            mah={300}
-          />
-
-          <Button
-            variant="subtle"
-            size="xs"
-            onClick={() => setAnswerRevealed((revealed) => !revealed)}
-            style={{ alignSelf: 'flex-start' }}
-          >
-            {answerRevealed ? 'Hide answer' : 'Reveal answer'}
-          </Button>
-          <Collapse expanded={answerRevealed}>
-            <Stack gap="xs">
-              <Image
-                src={`${API_BASE_URL}/cards/${card.id}/image?side=answer`}
-                alt="Diagram answer"
-                fit="contain"
-                mah={300}
-              />
-              <Text size="sm">{card.back}</Text>
-            </Stack>
-          </Collapse>
-
-          <Textarea
-            label="Front"
-            value={front}
-            onChange={(event) => setFront(event.currentTarget.value)}
-            autosize
-            minRows={2}
-          />
-          <Textarea
-            label="Back"
-            value={back}
-            onChange={(event) => setBack(event.currentTarget.value)}
-            autosize
-            minRows={2}
-          />
-
-          {saveErrorMessage && (
-            <Alert color="red" title="Could not save card">
-              {saveErrorMessage}
-            </Alert>
-          )}
-
-          <Group justify="flex-end">
-            <Button color="red" variant="outline" onClick={handleDelete} loading={isDeleting}>
-              Delete
-            </Button>
-            <Button onClick={handleSave} loading={isSaving}>
-              Save
-            </Button>
-          </Group>
-        </Stack>
-      </Card>
-    )
-  }
+  const badge = NOTE_TYPE_BADGE[noteType]
 
   return (
     <Card withBorder padding="md" data-testid={`card-${card.id}`}>
       <Stack gap="sm">
         <Group justify="space-between">
-          <Badge color={noteType === 'basic' ? 'blue' : 'grape'} variant="light">
-            {noteType === 'basic' ? 'Basic' : 'Cloze'}
+          <Badge color={badge.color} variant="light">
+            {badge.label}
           </Badge>
           <Text size="sm" c="dimmed">
             Page {card.source_page}
           </Text>
         </Group>
 
-        <SegmentedControl
-          value={noteType}
-          onChange={(value) => setNoteType(value as NoteType)}
-          data={[
-            { label: 'Basic', value: 'basic' },
-            { label: 'Cloze', value: 'cloze' },
-          ]}
-        />
-
-        {noteType === 'basic' ? (
+        {isDiagram ? (
           <>
+            <Image
+              src={`${API_BASE_URL}/cards/${card.id}/image?side=question`}
+              alt="Diagram question"
+              fit="contain"
+              mah={300}
+            />
+
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => setAnswerRevealed((revealed) => !revealed)}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              {answerRevealed ? 'Hide answer' : 'Reveal answer'}
+            </Button>
+            <Collapse expanded={answerRevealed}>
+              <Stack gap="xs">
+                <Image
+                  src={`${API_BASE_URL}/cards/${card.id}/image?side=answer`}
+                  alt="Diagram answer"
+                  fit="contain"
+                  mah={300}
+                />
+                <Text size="sm">{card.back}</Text>
+              </Stack>
+            </Collapse>
+
             <Textarea
               label="Front"
               value={front}
@@ -179,38 +130,68 @@ export function CardEditor({ jobId, card }: CardEditorProps) {
             />
           </>
         ) : (
-          <Textarea
-            label="Cloze text"
-            description="Use {{c1::…}} syntax"
-            value={clozeText}
-            onChange={(event) => setClozeText(event.currentTarget.value)}
-            autosize
-            minRows={2}
-          />
+          <>
+            <SegmentedControl
+              value={noteType}
+              onChange={(value) => setNoteType(value as NoteType)}
+              data={[
+                { label: 'Basic', value: 'basic' },
+                { label: 'Cloze', value: 'cloze' },
+              ]}
+            />
+
+            {noteType === 'basic' ? (
+              <>
+                <Textarea
+                  label="Front"
+                  value={front}
+                  onChange={(event) => setFront(event.currentTarget.value)}
+                  autosize
+                  minRows={2}
+                />
+                <Textarea
+                  label="Back"
+                  value={back}
+                  onChange={(event) => setBack(event.currentTarget.value)}
+                  autosize
+                  minRows={2}
+                />
+              </>
+            ) : (
+              <Textarea
+                label="Cloze text"
+                description="Use {{c1::…}} syntax"
+                value={clozeText}
+                onChange={(event) => setClozeText(event.currentTarget.value)}
+                autosize
+                minRows={2}
+              />
+            )}
+
+            <Switch
+              label="Include page image at export"
+              checked={needsPageImage}
+              onChange={(event) => setNeedsPageImage(event.currentTarget.checked)}
+            />
+
+            <Button
+              variant="subtle"
+              size="xs"
+              onClick={() => setImageOpen((open) => !open)}
+              style={{ alignSelf: 'flex-start' }}
+            >
+              {imageOpen ? 'Hide page preview' : 'Show page preview'}
+            </Button>
+            <Collapse expanded={imageOpen}>
+              <Image
+                src={`${API_BASE_URL}/jobs/${jobId}/pages/${card.source_page}`}
+                alt={`Page ${card.source_page} preview`}
+                fit="contain"
+                mah={300}
+              />
+            </Collapse>
+          </>
         )}
-
-        <Switch
-          label="Include page image at export"
-          checked={needsPageImage}
-          onChange={(event) => setNeedsPageImage(event.currentTarget.checked)}
-        />
-
-        <Button
-          variant="subtle"
-          size="xs"
-          onClick={() => setImageOpen((open) => !open)}
-          style={{ alignSelf: 'flex-start' }}
-        >
-          {imageOpen ? 'Hide page preview' : 'Show page preview'}
-        </Button>
-        <Collapse expanded={imageOpen}>
-          <Image
-            src={`${API_BASE_URL}/jobs/${jobId}/pages/${card.source_page}`}
-            alt={`Page ${card.source_page} preview`}
-            fit="contain"
-            mah={300}
-          />
-        </Collapse>
 
         {saveErrorMessage && (
           <Alert color="red" title="Could not save card">

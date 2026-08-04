@@ -11,6 +11,8 @@ interface RenderWithProvidersOptions {
   route?: string
   /** Route pattern the component is mounted under, e.g. `/jobs/:jobId`. */
   path?: string
+  /** Additional stub routes to mount alongside the component under test. */
+  extraRoutes?: { path: string; element: ReactElement }[]
 }
 
 /**
@@ -21,7 +23,7 @@ interface RenderWithProvidersOptions {
  * `useParams`) work without mounting the real `<App />`.
  */
 export function renderWithProviders(ui: ReactElement, options: RenderWithProvidersOptions = {}) {
-  const { route = '/', path = '/' } = options
+  const { route = '/', path = '/', extraRoutes = [] } = options
 
   const store = configureStore({
     reducer: {
@@ -37,6 +39,9 @@ export function renderWithProviders(ui: ReactElement, options: RenderWithProvide
         <MemoryRouter initialEntries={[route]}>
           <Routes>
             <Route path={path} element={ui} />
+            {extraRoutes.map((extraRoute) => (
+              <Route key={extraRoute.path} path={extraRoute.path} element={extraRoute.element} />
+            ))}
           </Routes>
         </MemoryRouter>
       </MantineProvider>

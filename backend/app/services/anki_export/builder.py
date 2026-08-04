@@ -29,6 +29,14 @@ def _diagram_media_filename(job_id: int, card_id: int, image_path: Path) -> str:
     return f"sb-job{job_id}-card{card_id}{image_path.suffix}"
 
 
+def _copy_media(image_path: Path, filename: str, media_dir: Path) -> tuple[str, Path] | None:
+    if not image_path.is_file():
+        return None
+    media_path = media_dir / filename
+    shutil.copyfile(image_path, media_path)
+    return filename, media_path
+
+
 def _diagram_image_media(
     settings: Settings, job_id: int, card_id: int, media_dir: Path
 ) -> tuple[str, Path] | None:
@@ -38,13 +46,8 @@ def _diagram_image_media(
     image has not been produced yet (e.g. composition has not run).
     """
     image_path = card_image_path(settings, job_id, card_id, "answer")
-    if not image_path.is_file():
-        return None
-
     filename = _diagram_media_filename(job_id, card_id, image_path)
-    media_path = media_dir / filename
-    shutil.copyfile(image_path, media_path)
-    return filename, media_path
+    return _copy_media(image_path, filename, media_dir)
 
 
 def _occlusions_field(occlusion: Occlusion) -> str:
@@ -75,13 +78,8 @@ def _page_image_media(
     if source_page is None:
         return None
     image_path = page_image_path(settings, job_id, source_page)
-    if not image_path.is_file():
-        return None
-
     filename = _media_filename(job_id, source_page, image_path)
-    media_path = media_dir / filename
-    shutil.copyfile(image_path, media_path)
-    return filename, media_path
+    return _copy_media(image_path, filename, media_dir)
 
 
 def build_apkg(

@@ -1,13 +1,11 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import _upload as _upload_response
+
 
 def _upload(client: TestClient, deck_name: str, pdf_bytes: bytes) -> dict[str, object]:
-    response = client.post(
-        "/jobs",
-        data={"deck_name": deck_name},
-        files={"file": ("lecture.pdf", pdf_bytes, "application/pdf")},
-    )
+    response = _upload_response(client, deck_name, pdf_bytes)
     assert response.status_code == 201
     return response.json()
 

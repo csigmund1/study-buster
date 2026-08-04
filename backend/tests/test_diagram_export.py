@@ -9,20 +9,11 @@ import pytest
 from PIL import Image
 
 from app.config import get_settings
-from app.models import Box, CardDraft, Direction, Job, JobStatus, NoteType, Occlusion
+from app.models import CardDraft, Job, JobStatus, NoteType
 from app.services.anki_export import build_apkg
 from app.services.anki_export.models import IMAGE_OCCLUSION_MODEL_ID
 from app.storage.paths import card_image_path
-
-
-def _occlusion() -> Occlusion:
-    return Occlusion(
-        direction=Direction.IDENTIFY,
-        label="Thyroid gland",
-        crop_box=Box(left=0.1, top=0.1, width=0.8, height=0.8),
-        label_box=Box(left=0.3, top=0.3, width=0.2, height=0.1),
-        mask_boxes=[Box(left=0.3, top=0.3, width=0.2, height=0.1)],
-    )
+from tests.conftest import sample_occlusion
 
 
 def test_diagram_card_exports_one_image_occlusion_card(
@@ -32,7 +23,7 @@ def test_diagram_card_exports_one_image_occlusion_card(
     settings = get_settings()
 
     job = Job(id=1, deck_name="Anatomy", pdf_path="", status=JobStatus.READY)
-    occ = _occlusion()
+    occ = sample_occlusion()
     card = CardDraft(
         id=1,
         job_id=1,

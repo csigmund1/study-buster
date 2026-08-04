@@ -1,13 +1,9 @@
-import type { ReactElement } from 'react'
-import { render, screen, waitFor } from '@testing-library/react'
+import { screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { configureStore } from '@reduxjs/toolkit'
-import { Provider } from 'react-redux'
-import { MantineProvider } from '@mantine/core'
-import { MemoryRouter, Route, Routes, useParams } from 'react-router-dom'
+import { useParams } from 'react-router-dom'
 import { http, HttpResponse } from 'msw'
 import { describe, expect, it } from 'vitest'
-import { baseApi } from '../api/baseApi'
+import { renderWithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
 import { API_URL, makeJob } from '../test/handlers'
 import { UploadPage } from './UploadPage'
@@ -21,24 +17,10 @@ function JobRouteStub() {
  * Renders `UploadPage` alongside a stub `/jobs/:jobId` route so navigation
  * on successful submit can be asserted end-to-end.
  */
-function renderUploadPage(ui: ReactElement = <UploadPage />) {
-  const store = configureStore({
-    reducer: { [baseApi.reducerPath]: baseApi.reducer },
-    middleware: (getDefaultMiddleware) => getDefaultMiddleware().concat(baseApi.middleware),
+function renderUploadPage() {
+  return renderWithProviders(<UploadPage />, {
+    extraRoutes: [{ path: '/jobs/:jobId', element: <JobRouteStub /> }],
   })
-
-  return render(
-    <Provider store={store}>
-      <MantineProvider>
-        <MemoryRouter initialEntries={['/']}>
-          <Routes>
-            <Route path="/" element={ui} />
-            <Route path="/jobs/:jobId" element={<JobRouteStub />} />
-          </Routes>
-        </MemoryRouter>
-      </MantineProvider>
-    </Provider>,
-  )
 }
 
 function pdfFile(name = 'lecture.pdf', size = 1024) {

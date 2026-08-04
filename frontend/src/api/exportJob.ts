@@ -1,4 +1,5 @@
 import { API_BASE_URL } from './baseApi'
+import { extractDetail } from './errors'
 
 const DEFAULT_FILENAME = 'deck.apkg'
 
@@ -34,14 +35,7 @@ export async function exportJob(jobId: number): Promise<void> {
     let detail = `Export failed (${response.status})`
     try {
       const body: unknown = await response.json()
-      if (
-        body !== null &&
-        typeof body === 'object' &&
-        'detail' in body &&
-        typeof (body as { detail: unknown }).detail === 'string'
-      ) {
-        detail = (body as { detail: string }).detail
-      }
+      detail = extractDetail(body) ?? detail
     } catch {
       // Response body wasn't JSON; keep the generic message.
     }
