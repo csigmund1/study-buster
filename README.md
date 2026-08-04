@@ -1,2 +1,2 @@
 # study-buster
-Automatically your lecture notes to flash cards in seconds!
+Automatically convert your lecture notes to flash cards in seconds!
