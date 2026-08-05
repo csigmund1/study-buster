@@ -1,4 +1,11 @@
+# Claude specific
 .claude
+
+# Codex Specific
+.codex
+.agents
+
+# Repo specific
 .dev/
 spikes/
 docs/

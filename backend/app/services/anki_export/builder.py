@@ -15,7 +15,7 @@ from pathlib import Path
 import genanki
 
 from app.config import Settings
-from app.models import CardDraft, Job, NoteType, Occlusion
+from app.models import CardDraft, Job, NoteType, Occlusion, is_occlusion
 from app.services.anki_export.models import BASIC_MODEL, CLOZE_MODEL, IMAGE_OCCLUSION_MODEL
 from app.services.anki_export.naming import deck_id_for
 from app.storage.paths import card_image_path, page_image_path
@@ -51,20 +51,28 @@ def _diagram_image_media(
 
 
 def _occlusions_field(occlusion: Occlusion) -> str:
-    """Build a single-cloze `Occlusions` field over the target's `label_box` —
-    the label mask itself (there is no separate structure-level box).
+    """Build the `Occlusions` field covering every box in `target_boxes`.
+
+    Every shape goes under the **same** `c1` index, so the note produces exactly
+    one Anki card no matter how many boxes it carries. Using `c1..cN` would
+    silently yield N cards instead.
 
     Coordinates are converted from page-normalized to crop-normalized (the
     Image field holds the cropped card image, not the full page).
     """
     crop_box = occlusion.crop_box
-    label_box = occlusion.label_box
-    cl = (label_box.left - crop_box.left) / crop_box.width
-    ct = (label_box.top - crop_box.top) / crop_box.height
-    cw = label_box.width / crop_box.width
-    ch = label_box.height / crop_box.height
-    shape = f"image-occlusion:rect:left={cl:.4f}:top={ct:.4f}:width={cw:.4f}:height={ch:.4f}:oi=1"
-    return f"{{{{c1::{shape}}}}}"
+    parts: list[str] = []
+    for target_box in occlusion.target_boxes:
+        cl = (target_box.left - crop_box.left) / crop_box.width
+        ct = (target_box.top - crop_box.top) / crop_box.height
+        cw = target_box.width / crop_box.width
+        ch = target_box.height / crop_box.height
+        shape = (
+            f"image-occlusion:rect:left={cl:.4f}:top={ct:.4f}"
+            f":width={cw:.4f}:height={ch:.4f}:oi=1"
+        )
+        parts.append(f"{{{{c1::{shape}}}}}")
+    return "<br>".join(parts)
 
 
 def _page_image_media(
@@ -105,7 +113,7 @@ def build_apkg(
             if card.is_deleted:
                 continue
 
-            if card.note_type == NoteType.DIAGRAM:
+            if is_occlusion(card.note_type):
                 if card.id is None:
                     continue
                 diagram_media = _diagram_image_media(settings, job.id, card.id, media_dir)

@@ -15,6 +15,7 @@ import {
 } from '@mantine/core'
 import { API_BASE_URL, useDeleteCardMutation, useUpdateCardMutation } from '../api/baseApi'
 import { getErrorDetail } from '../api/errors'
+import { isOcclusionNoteType } from '../types/card'
 import type { CardDraft, NoteType } from '../types/card'
 
 interface CardEditorProps {
@@ -26,6 +27,7 @@ const NOTE_TYPE_BADGE: Record<NoteType, { color: string; label: string }> = {
   basic: { color: 'blue', label: 'Basic' },
   cloze: { color: 'grape', label: 'Cloze' },
   diagram: { color: 'teal', label: 'Diagram' },
+  text_occlusion: { color: 'orange', label: 'Fill-in-blank' },
 }
 
 /**
@@ -36,7 +38,7 @@ const NOTE_TYPE_BADGE: Record<NoteType, { color: string; label: string }> = {
  * type requires, per the API contract.
  */
 export function CardEditor({ jobId, card }: CardEditorProps) {
-  const isDiagram = card.note_type === 'diagram'
+  const isOcclusion = isOcclusionNoteType(card.note_type)
   const [noteType, setNoteType] = useState<NoteType>(card.note_type)
   const [front, setFront] = useState(card.front ?? '')
   const [back, setBack] = useState(card.back ?? '')
@@ -49,8 +51,8 @@ export function CardEditor({ jobId, card }: CardEditorProps) {
   const [deleteCard, { isLoading: isDeleting }] = useDeleteCardMutation()
 
   const handleSave = async () => {
-    const body = isDiagram
-      ? { note_type: 'diagram' as NoteType, front, back }
+    const body = isOcclusion
+      ? { note_type: card.note_type, front, back }
       : noteType === 'basic'
         ? { note_type: noteType as NoteType, front, back }
         : { note_type: noteType as NoteType, cloze_text: clozeText }
@@ -85,11 +87,11 @@ export function CardEditor({ jobId, card }: CardEditorProps) {
           </Text>
         </Group>
 
-        {isDiagram ? (
+        {isOcclusion ? (
           <>
             <Image
               src={`${API_BASE_URL}/cards/${card.id}/image?side=question`}
-              alt="Diagram question"
+              alt={`${badge.label} question`}
               fit="contain"
               mah={300}
             />
@@ -106,7 +108,7 @@ export function CardEditor({ jobId, card }: CardEditorProps) {
               <Stack gap="xs">
                 <Image
                   src={`${API_BASE_URL}/cards/${card.id}/image?side=answer`}
-                  alt="Diagram answer"
+                  alt={`${badge.label} answer`}
                   fit="contain"
                   mah={300}
                 />

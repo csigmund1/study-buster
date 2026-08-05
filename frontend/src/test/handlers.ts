@@ -12,6 +12,16 @@ export function makeJob(overrides: Partial<Job> = {}): Job {
     error_message: null,
     page_count: 12,
     card_count: 2,
+    stage: 'finalizing',
+    stage_label: 'Finishing up',
+    progress_percent: 100,
+    eta_seconds: null,
+    options: {
+      text_card_mode: 'basic_cloze',
+      diagram_occlusion_enabled: true,
+      diagram_mask_grouping: 'individual',
+      text_mask_grouping: 'individual',
+    },
     created_at: '2026-08-01T19:00:00Z',
     updated_at: '2026-08-01T19:00:05Z',
     ...overrides,
@@ -35,15 +45,38 @@ export function makeCard(overrides: Partial<CardDraft> = {}): CardDraft {
   }
 }
 
+/** Diagram-kind occlusion geometry; pass overrides for other shapes. */
 export function makeOcclusion(overrides: Partial<Occlusion> = {}): Occlusion {
   return {
+    kind: 'diagram',
     direction: 'identify',
-    label: 'Helicase',
+    labels: ['Helicase'],
     crop_box: { left: 0.2, top: 0.05, width: 0.55, height: 0.9 },
-    label_box: { left: 0.61, top: 0.32, width: 0.15, height: 0.05 },
+    target_boxes: [{ left: 0.61, top: 0.32, width: 0.15, height: 0.05 }],
     mask_boxes: [{ left: 0.61, top: 0.32, width: 0.15, height: 0.05 }],
     ...overrides,
   }
+}
+
+/**
+ * Text-kind occlusion geometry (the `text_occlusion` note type). Defaults to a
+ * single label spanning two boxes, as a masked phrase wrapping across lines.
+ */
+export function makeTextOcclusion(overrides: Partial<Occlusion> = {}): Occlusion {
+  return makeOcclusion({
+    kind: 'text',
+    labels: ['unwinds the double helix'],
+    crop_box: { left: 0, top: 0, width: 1, height: 1 },
+    target_boxes: [
+      { left: 0.3, top: 0.4, width: 0.4, height: 0.03 },
+      { left: 0.1, top: 0.44, width: 0.2, height: 0.03 },
+    ],
+    mask_boxes: [
+      { left: 0.3, top: 0.4, width: 0.4, height: 0.03 },
+      { left: 0.1, top: 0.44, width: 0.2, height: 0.03 },
+    ],
+    ...overrides,
+  })
 }
 
 /** A tiny 1x1 transparent PNG, used as a stub image response in tests. */

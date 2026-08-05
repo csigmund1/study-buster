@@ -1,13 +1,14 @@
 """Unit tests for diagram detection, occlusion mapping, and composition."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from PIL import Image
 
 from app.config import get_settings
-from app.models import Box, Direction, Occlusion
+from app.models import Box, Direction, Occlusion, OcclusionKind
 from app.services.diagram_detection import (
     DetectionPage,
     MockDiagramDetector,
@@ -23,7 +24,7 @@ from app.services.diagram_detection.compose import (
     HIGHLIGHT_BORDER,
     HIGHLIGHT_FILL,
     MASK_COLOR,
-    compose_identify,
+    compose_occlusion,
 )
 from app.services.diagram_detection.ocr import OcrEngine, OcrItem
 from app.services.diagram_detection.schemas import DiagramDetection, LabelDetection
@@ -81,37 +82,67 @@ class _FakeOcrEngine:
         return self._items
 
 
-def test_apple_vision_ocr_flips_and_clamps(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.services.diagram_detection.ocr import AppleVisionOcr
+class _FakeRect:
+    def __init__(self, x: float, y: float, width: float, height: float) -> None:
+        self.origin = SimpleNamespace(x=x, y=y)
+        self.size = SimpleNamespace(width=width, height=height)
 
-    fake_results = [
-        # normal item: bottom-left origin (x, y, w, h) -> top-left flip.
-        ("Thyroid", 0.9, (0.1, 0.2, 0.3, 0.1)),
-        # zero-size item after clamping should be skipped.
-        ("Tiny", 0.5, (1.0, 1.0, 0.0, 0.0)),
-        # out-of-range coordinates should clamp into [0, 1].
-        ("Edge", 0.7, (-0.05, -0.05, 0.2, 0.2)),
-    ]
 
-    fake_ocrmac_module = MagicMock()
-    fake_ocrmac_module.OCR.return_value.recognize.return_value = fake_results
-    monkeypatch.setitem(__import__("sys").modules, "ocrmac", MagicMock(ocrmac=fake_ocrmac_module))
+class _FakeCandidate:
+    def __init__(self, text: str, confidence: float) -> None:
+        self._text = text
+        self._confidence = confidence
 
-    items = AppleVisionOcr().extract(Path("dummy.png"))
+    def string(self) -> str:
+        return self._text
 
-    texts = [item.text for item in items]
-    assert "Tiny" not in texts
-    assert "Thyroid" in texts
+    def confidence(self) -> float:
+        return self._confidence
 
-    thyroid = next(item for item in items if item.text == "Thyroid")
-    # x=0.1, y=0.2, w=0.3, h=0.1 -> top = 1 - 0.2 - 0.1 = 0.7
+    def boundingBoxForRange_error_(  # noqa: N802 - mirrors the ObjC selector
+        self, _range: tuple[int, int], _error: None
+    ) -> tuple[None, None]:
+        return None, None  # word geometry unavailable for this stub
+
+
+class _FakeObservation:
+    """Stands in for a `VNRecognizedTextObservation`."""
+
+    def __init__(self, text: str, confidence: float, rect: _FakeRect) -> None:
+        self._candidate = _FakeCandidate(text, confidence)
+        self._rect = rect
+
+    def topCandidates_(self, _count: int) -> list[_FakeCandidate]:  # noqa: N802
+        return [self._candidate]
+
+    def boundingBox(self) -> _FakeRect:  # noqa: N802
+        return self._rect
+
+
+def test_vision_observation_flips_and_clamps() -> None:
+    """Vision is bottom-left origin; `Box` is top-left. The flip is `1 - y - h`."""
+    from app.services.diagram_detection.ocr import _build_item
+
+    # normal item: bottom-left (x, y, w, h) -> top-left flip
+    thyroid = _build_item(_FakeObservation("Thyroid", 0.9, _FakeRect(0.1, 0.2, 0.3, 0.1)))
+    assert thyroid is not None
     assert thyroid.box.left == pytest.approx(0.1)
-    assert thyroid.box.top == pytest.approx(0.7)
+    assert thyroid.box.top == pytest.approx(0.7)  # 1 - 0.2 - 0.1
     assert thyroid.box.width == pytest.approx(0.3)
     assert thyroid.box.height == pytest.approx(0.1)
+    assert thyroid.confidence == pytest.approx(0.9)
 
-    edge = next(item for item in items if item.text == "Edge")
+    # zero-size item after clamping is dropped, never raised
+    assert _build_item(_FakeObservation("Tiny", 0.5, _FakeRect(1.0, 1.0, 0.0, 0.0))) is None
+
+    # out-of-range coordinates clamp into [0, 1]
+    edge = _build_item(_FakeObservation("Edge", 0.7, _FakeRect(-0.05, -0.05, 0.2, 0.2)))
+    assert edge is not None
     assert 0.0 <= edge.box.left <= 1.0
+    assert 0.0 <= edge.box.top <= 1.0
+
+    # a line whose word ranges Vision will not measure still yields the line item
+    assert edge.words == []
     assert 0.0 <= edge.box.top <= 1.0
 
 
@@ -277,20 +308,21 @@ def test_occlusion_rejects_empty_label() -> None:
 # --- composition ------------------------------------------------------------
 
 
-def test_compose_identify_writes_two_cropped_images(tmp_path: Path) -> None:
+def test_compose_occlusion_writes_two_cropped_images(tmp_path: Path) -> None:
     page = tmp_path / "page.png"
     Image.new("RGB", (400, 300), "white").save(page)
 
     occ = Occlusion(
+        kind=OcclusionKind.DIAGRAM,
         direction=Direction.IDENTIFY,
-        label="Target",
+        labels=["Target"],
         crop_box=_box(0.1, 0.1, 0.5, 0.5),
-        label_box=_box(0.15, 0.15, 0.1, 0.05),
+        target_boxes=[_box(0.15, 0.15, 0.1, 0.05)],
         mask_boxes=[_box(0.15, 0.15, 0.1, 0.05), _box(0.35, 0.35, 0.1, 0.05)],
     )
     question = tmp_path / "q.png"
     answer = tmp_path / "a.png"
-    compose_identify(page, occ, question, answer)
+    compose_occlusion(page, occ, question, answer)
 
     assert question.is_file() and answer.is_file()
     with Image.open(question) as q_img, Image.open(answer) as a_img:
@@ -302,15 +334,58 @@ def test_compose_identify_writes_two_cropped_images(tmp_path: Path) -> None:
         q_rgb = q_img.convert("RGB")
         a_rgb = a_img.convert("RGB")
 
-        # question: target label_box is highlighted (amber fill somewhere inside it)
+        # question: the single target is highlighted (amber fill somewhere inside it)
         target_px = q_rgb.getpixel((15, 8))
-        assert target_px == HIGHLIGHT_FILL or _near_border(q_rgb, occ.label_box)
+        assert target_px == HIGHLIGHT_FILL or _near_border(q_rgb, occ.target_boxes[0])
 
         # question: the other mask_box is plain gray mask
         # mask_boxes[1] = (0.35, 0.35, 0.1, 0.05) page-normalized; crop_box starts
         # at (0.1, 0.1) over a 400x300 page -> crop-local (100, 75) to (140, 90).
         other_px = q_rgb.getpixel((110, 80))
         assert other_px == MASK_COLOR
+
+        # answer: the target is revealed (original white page), the other still masked
+        assert a_rgb.getpixel((15, 8)) == (255, 255, 255)
+        assert a_rgb.getpixel((110, 80)) == MASK_COLOR
+
+
+def test_compose_occlusion_text_kind_masks_without_highlighting(tmp_path: Path) -> None:
+    """Text cards get no pointer: the span is masked flat, never highlighted."""
+    page = tmp_path / "page.png"
+    Image.new("RGB", (400, 300), "white").save(page)
+
+    occ = Occlusion(
+        kind=OcclusionKind.TEXT,
+        direction=Direction.IDENTIFY,
+        labels=["Part of"],
+        crop_box=_box(0.0, 0.0, 1.0, 1.0),  # text cards use the full page
+        target_boxes=[_box(0.15, 0.15, 0.1, 0.05)],
+        mask_boxes=[_box(0.15, 0.15, 0.1, 0.05)],
+    )
+    question = tmp_path / "q.png"
+    answer = tmp_path / "a.png"
+    compose_occlusion(page, occ, question, answer)
+
+    with Image.open(question) as q_img, Image.open(answer) as a_img:
+        q_rgb = q_img.convert("RGB")
+        a_rgb = a_img.convert("RGB")
+
+        # full page, uncropped
+        assert q_rgb.size == (400, 300)
+
+        # question: the span is plain mask, NOT the highlight style
+        inside = q_rgb.getpixel((70, 50))
+        assert inside == MASK_COLOR
+        assert inside != HIGHLIGHT_FILL
+        assert HIGHLIGHT_FILL not in set(q_rgb.getdata())
+        assert HIGHLIGHT_BORDER not in set(q_rgb.getdata())
+
+        # question: pixels outside the masked span are untouched
+        assert q_rgb.getpixel((300, 250)) == (255, 255, 255)
+        assert q_rgb.getpixel((10, 10)) == (255, 255, 255)
+
+        # answer: the span is revealed again
+        assert a_rgb.getpixel((70, 50)) == (255, 255, 255)
 
         # answer: target box reveals original page content (white), not masked/highlighted
         answer_target_px = a_rgb.getpixel((15, 8))

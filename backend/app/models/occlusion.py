@@ -8,13 +8,25 @@ crop-local pixels.
 """
 
 from enum import StrEnum
+from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 class Direction(StrEnum):
     IDENTIFY = "identify"  # target highlighted, its label hidden; answer reveals the label
     LOCATE = "locate"  # target named in text, all labels masked; answer highlights it
+
+
+class OcclusionKind(StrEnum):
+    """Which detector produced an occlusion.
+
+    Note the deliberate asymmetry with `NoteType`: note type `diagram` pairs with
+    kind `diagram`, but note type `text_occlusion` pairs with kind `text`.
+    """
+
+    DIAGRAM = "diagram"
+    TEXT = "text"
 
 
 class Box(BaseModel):
@@ -27,18 +39,46 @@ class Box(BaseModel):
 
 
 class Occlusion(BaseModel):
-    """The occlusion payload carried by a `diagram` card.
+    """The occlusion payload carried by an occlusion card (`diagram` or
+    `text_occlusion`).
 
-    `mask_boxes` is every label's text box (including the target's). `label_box`
-    is the target label's own box: its mask is drawn in the highlight style on
-    the question side (the pointer — "what is this?"), lifted on the answer
-    side to reveal the label text, and covered by the single native-IO mask at
-    export. There is no structure-level box: the label mask itself, sitting at
-    the end of its arrow/leader line, is the pointer.
+    `mask_boxes` is everything hidden on the question side — for a diagram, every
+    label's text box on the page (including the target's); for a text card, the
+    masked span's boxes. `target_boxes` is what the answer side reveals and what
+    export clozes, all under a single `c1` index so one note is one Anki card.
+
+    `target_boxes` is **not** parallel to `labels`: one label may span several
+    boxes when a masked phrase wraps across lines.
     """
 
+    kind: OcclusionKind
     direction: Direction
-    label: str
+    labels: list[str] = Field(min_length=1)
     crop_box: Box
-    label_box: Box
+    target_boxes: list[Box] = Field(min_length=1)
     mask_boxes: list[Box]
+
+    @model_validator(mode="before")
+    @classmethod
+    def _upgrade_legacy(cls, data: Any) -> Any:
+        """Upgrade pre-multi-target payloads read back from the database.
+
+        Rows persisted before this change carry `label`/`label_box` and no
+        `kind`. They were all diagram cards. Upgrading here (rather than
+        migrating) keeps existing jobs loadable with no dev-DB reset — see
+        `storage/database.py`, which cannot rename columns.
+        """
+        if not isinstance(data, dict) or "kind" in data:
+            return data
+        if "label" not in data and "label_box" not in data:
+            return data
+
+        upgraded = dict(data)
+        legacy_label = upgraded.pop("label", None)
+        legacy_box = upgraded.pop("label_box", None)
+        upgraded["kind"] = OcclusionKind.DIAGRAM
+        if "labels" not in upgraded and legacy_label is not None:
+            upgraded["labels"] = [legacy_label]
+        if "target_boxes" not in upgraded and legacy_box is not None:
+            upgraded["target_boxes"] = [legacy_box]
+        return upgraded

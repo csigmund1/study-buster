@@ -5,7 +5,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models import Box, Direction, Occlusion
+from app.models import Box, Direction, Occlusion, OcclusionKind
 from app.storage.database import _engine_cache
 
 
@@ -53,12 +53,24 @@ def _upload(
 
 def sample_occlusion() -> Occlusion:
     return Occlusion(
+        kind=OcclusionKind.DIAGRAM,
         direction=Direction.IDENTIFY,
-        label="Thyroid gland",
+        labels=["Thyroid gland"],
         crop_box=Box(left=0.1, top=0.1, width=0.8, height=0.8),
-        label_box=Box(left=0.3, top=0.3, width=0.2, height=0.1),
+        target_boxes=[Box(left=0.3, top=0.3, width=0.2, height=0.1)],
         mask_boxes=[Box(left=0.3, top=0.3, width=0.2, height=0.1)],
     )
+
+
+def legacy_occlusion_dict() -> dict[str, object]:
+    """The pre-multi-target payload shape, as persisted by earlier jobs."""
+    return {
+        "direction": "identify",
+        "label": "Thyroid gland",
+        "crop_box": {"left": 0.1, "top": 0.1, "width": 0.8, "height": 0.8},
+        "label_box": {"left": 0.3, "top": 0.3, "width": 0.2, "height": 0.1},
+        "mask_boxes": [{"left": 0.3, "top": 0.3, "width": 0.2, "height": 0.1}],
+    }
 
 
 def _box(left: float, top: float, width: float, height: float) -> Box:

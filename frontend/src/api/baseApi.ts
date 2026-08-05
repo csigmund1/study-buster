@@ -1,6 +1,7 @@
 import { createApi, fetchBaseQuery } from '@reduxjs/toolkit/query/react'
 import type { Job } from '../types/job'
 import type { CardDraft, UpdateCardRequest } from '../types/card'
+import type { GenerationOptions } from '../types/generationOptions'
 
 export const API_BASE_URL: string =
   (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
@@ -12,6 +13,7 @@ export interface HealthResponse {
 export interface CreateJobArgs {
   deckName: string
   file: File
+  options: GenerationOptions
 }
 
 export interface UpdateCardArgs {
@@ -48,10 +50,11 @@ export const baseApi = createApi({
           : [{ type: 'CardDraft' as const, id: 'LIST' }],
     }),
     createJob: builder.mutation<Job, CreateJobArgs>({
-      query: ({ deckName, file }) => {
+      query: ({ deckName, file, options }) => {
         const formData = new FormData()
         formData.append('deck_name', deckName)
         formData.append('file', file)
+        formData.append('options', JSON.stringify(options))
         return {
           url: '/jobs',
           method: 'POST',

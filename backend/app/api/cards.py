@@ -6,7 +6,7 @@ from sqlmodel import Session
 
 from app.config import Settings, get_settings
 from app.models import CardDraft
-from app.models.enums import NoteType
+from app.models.enums import NoteType, is_occlusion
 from app.schemas import CardDraftRead, CardDraftUpdate
 from app.services.card_rules import CardValidationError, validate_card_fields
 from app.storage import card_image_path, get_session
@@ -25,16 +25,16 @@ def update_card(
     changes = update.model_dump(exclude_unset=True)
     requested_note_type = changes.get("note_type", card.note_type)
 
-    # Diagram cards are fixed-type: their occlusion geometry is read-only and they
-    # cannot switch note type (and nothing can switch *into* diagram). Only the
-    # front/back text is editable.
-    if NoteType.DIAGRAM in (card.note_type, requested_note_type):
-        if card.note_type != NoteType.DIAGRAM or requested_note_type != NoteType.DIAGRAM:
-            raise HTTPException(status_code=422, detail="Diagram cards cannot change note type.")
+    # Occlusion cards (diagram, text_occlusion) are fixed-type: their geometry is
+    # read-only and they cannot switch note type — nor can anything switch *into*
+    # an occlusion type. Only the front/back text is editable.
+    if is_occlusion(card.note_type) or is_occlusion(requested_note_type):
+        if card.note_type != requested_note_type:
+            raise HTTPException(status_code=422, detail="Occlusion cards cannot change note type.")
         front = changes.get("front", card.front)
         back = changes.get("back", card.back)
         try:
-            validate_card_fields(NoteType.DIAGRAM, front, back, None)
+            validate_card_fields(card.note_type, front, back, None)
         except CardValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from None
         card.front = front
@@ -88,7 +88,7 @@ def get_card_image(
     card = session.get(CardDraft, card_id)
     if card is None or card.is_deleted:
         raise HTTPException(status_code=404, detail="Card not found.")
-    if card.note_type != NoteType.DIAGRAM or card.id is None:
+    if not is_occlusion(card.note_type) or card.id is None:
         raise HTTPException(status_code=404, detail="Card has no composed image.")
 
     image_path = card_image_path(settings, card.job_id, card.id, side)
