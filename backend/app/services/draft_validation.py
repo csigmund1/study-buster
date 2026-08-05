@@ -18,14 +18,14 @@ _PUNCTUATION_TABLE = str.maketrans("", "", string.punctuation)
 _WHITESPACE_PATTERN = re.compile(r"\s+")
 
 
-def _normalize(text: str) -> str:
+def normalize_text(text: str) -> str:
     lowered = text.lower().translate(_PUNCTUATION_TABLE)
     return _WHITESPACE_PATTERN.sub(" ", lowered).strip()
 
 
 def _dedup_key(card: GeneratedCard) -> str:
     text = card.cloze_text if card.note_type == "cloze" else card.front
-    return _normalize(text or "")
+    return normalize_text(text or "")
 
 
 def _is_within_length(card: GeneratedCard) -> bool:

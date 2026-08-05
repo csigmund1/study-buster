@@ -7,13 +7,10 @@ those ranges into boxes from the OCR word geometry, and `filters.py` decides
 what survives.
 """
 
-import base64
-import io
-
 import anthropic
-from anthropic.types import ImageBlockParam, TextBlockParam
-from PIL import Image
+from anthropic.types import TextBlockParam
 
+from app.services.anthropic_images import encode_page_image
 from app.services.diagram_detection.ocr import OcrItem
 from app.services.text_occlusion.base import TextOcclusionError, TextPage
 from app.services.text_occlusion.filters import MAX_SPAN_WORDS, MAX_SPANS_PER_PAGE
@@ -64,7 +61,7 @@ class AnthropicTextSpanSelector:
         if not page.lines:
             return SpanSelection()
 
-        image_block = self._encode_page(page)
+        image_block = encode_page_image(page.image_path, self._max_edge_px)
         text_block: TextBlockParam = {
             "type": "text",
             "text": f"Page {page.page_number}. Numbered OCR lines:\n"
@@ -94,22 +91,3 @@ class AnthropicTextSpanSelector:
                 "Text span selection response could not be parsed into the expected schema."
             )
         return parsed
-
-    def _encode_page(self, page: TextPage) -> ImageBlockParam:
-        with Image.open(page.image_path) as raw_image:
-            image = raw_image.convert("RGB")
-        long_edge = max(image.width, image.height)
-        if long_edge > self._max_edge_px:
-            scale = self._max_edge_px / long_edge
-            new_size = (round(image.width * scale), round(image.height * scale))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        return {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64.standard_b64encode(buffer.getvalue()).decode("ascii"),
-            },
-        }

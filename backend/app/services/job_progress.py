@@ -146,3 +146,10 @@ class JobProgress:
                 self._last_commit = now
         except Exception:
             pass
+
+
+def enter_stage(progress: JobProgress, stage: JobStage, total: int) -> None:
+    """Enter a stage only when it has real work: a zero denominator would mean an
+    unknown percentage, so an empty stage is skipped entirely instead."""
+    if total > 0:
+        progress.stage(stage, total=total)

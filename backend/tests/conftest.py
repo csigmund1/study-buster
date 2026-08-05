@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -48,6 +49,22 @@ def _upload(
         "/jobs",
         data={"deck_name": deck_name},
         files={"file": ("lecture.pdf", pdf_bytes, content_type)},
+    )
+
+
+def _upload_with_options(
+    client: TestClient, deck_name: str, pdf_bytes: bytes, options: dict[str, object] | str
+) -> httpx.Response:
+    """Upload with a job-options payload, raw JSON string or dict (dumped for you).
+
+    Does not assert on the response: callers decide, since some expect success
+    (201) and others expect validation failure (422).
+    """
+    raw_options = options if isinstance(options, str) else json.dumps(options)
+    return client.post(
+        "/jobs",
+        data={"deck_name": deck_name, "options": raw_options},
+        files={"file": ("lecture.pdf", pdf_bytes, "application/pdf")},
     )
 
 

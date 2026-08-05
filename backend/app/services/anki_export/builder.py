@@ -25,7 +25,7 @@ def _media_filename(job_id: int, page_number: int, image_path: Path) -> str:
     return f"sb-job{job_id}-page{page_number}{image_path.suffix}"
 
 
-def _diagram_media_filename(job_id: int, card_id: int, image_path: Path) -> str:
+def _occlusion_media_filename(job_id: int, card_id: int, image_path: Path) -> str:
     return f"sb-job{job_id}-card{card_id}{image_path.suffix}"
 
 
@@ -37,16 +37,16 @@ def _copy_media(image_path: Path, filename: str, media_dir: Path) -> tuple[str, 
     return filename, media_path
 
 
-def _diagram_image_media(
+def _occlusion_image_media(
     settings: Settings, job_id: int, card_id: int, media_dir: Path
 ) -> tuple[str, Path] | None:
-    """Copy a diagram card's composed answer image into `media_dir`.
+    """Copy an occlusion card's composed answer image into `media_dir`.
 
     Returns `(media_filename, media_path)`, or `None` if the composed answer
     image has not been produced yet (e.g. composition has not run).
     """
     image_path = card_image_path(settings, job_id, card_id, "answer")
-    filename = _diagram_media_filename(job_id, card_id, image_path)
+    filename = _occlusion_media_filename(job_id, card_id, image_path)
     return _copy_media(image_path, filename, media_dir)
 
 
@@ -116,10 +116,10 @@ def build_apkg(
             if is_occlusion(card.note_type):
                 if card.id is None:
                     continue
-                diagram_media = _diagram_image_media(settings, job.id, card.id, media_dir)
-                if diagram_media is None:
+                occlusion_media = _occlusion_image_media(settings, job.id, card.id, media_dir)
+                if occlusion_media is None:
                     continue
-                filename, media_path = diagram_media
+                filename, media_path = occlusion_media
                 occlusion = Occlusion.model_validate(card.occlusion)
                 occlusions_field = _occlusions_field(occlusion)
                 image_field = f'<img src="{html.escape(filename)}">'
