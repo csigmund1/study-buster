@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +7,7 @@ from app.models import JobStage
 from app.services import job_progress, pipeline
 from app.services.diagram_detection.ocr import OcrItem
 from tests.conftest import _upload as _upload_response
+from tests.conftest import _upload_with_options
 from tests.test_text_occlusion import SENTENCE, make_line
 
 
@@ -15,6 +15,30 @@ def _upload(client: TestClient, deck_name: str, pdf_bytes: bytes) -> dict[str, o
     response = _upload_response(client, deck_name, pdf_bytes)
     assert response.status_code == 201
     return response.json()
+
+
+def _record_stages(
+    monkeypatch: pytest.MonkeyPatch, *, assert_nonempty: bool = False
+) -> list[tuple[JobStage, int | None]]:
+    """Monkeypatch JobProgress.stage to record every (stage, total) it is entered with.
+
+    When `assert_nonempty` is set, also assert that a stage is never entered with
+    an empty (None or zero) denominator — the "never enter a stage with no work"
+    regression check.
+    """
+    seen: list[tuple[JobStage, int | None]] = []
+    original_stage = job_progress.JobProgress.stage
+
+    def recording_stage(
+        self: job_progress.JobProgress, name: JobStage, total: int | None = None
+    ) -> None:
+        seen.append((name, total))
+        if assert_nonempty:
+            assert total is not None and total > 0, "a stage must never be entered with no work"
+        original_stage(self, name, total)
+
+    monkeypatch.setattr(job_progress.JobProgress, "stage", recording_stage)
+    return seen
 
 
 def test_mock_pipeline_end_to_end(client: TestClient, minimal_pdf_bytes: bytes) -> None:
@@ -80,24 +104,14 @@ def test_pipeline_fails_job_when_pdf_exceeds_page_limit(
 def test_pipeline_advances_through_the_expected_stages(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, minimal_pdf_bytes: bytes
 ) -> None:
-    seen: list[JobStage] = []
-    original_stage = job_progress.JobProgress.stage
-
-    def recording_stage(
-        self: job_progress.JobProgress, name: JobStage, total: int | None = None
-    ) -> None:
-        seen.append(name)
-        assert total is not None and total > 0, "a stage must never be entered with no work"
-        original_stage(self, name, total)
-
-    monkeypatch.setattr(job_progress.JobProgress, "stage", recording_stage)
+    seen = _record_stages(monkeypatch, assert_nonempty=True)
 
     job = _upload(client, "Stages", minimal_pdf_bytes)
     body = client.get(f"/jobs/{job['id']}").json()
     assert body["status"] == "ready"
 
     # The mock generator flags page 1 as a diagram, so every stage runs.
-    assert seen == [
+    assert [stage for stage, _ in seen] == [
         JobStage.RENDERING,
         JobStage.EXTRACTING,
         JobStage.GENERATING_CARDS,
@@ -215,16 +229,7 @@ def test_progress_percent_never_decreases_with_both_occlusion_kinds(
     monkeypatch.setenv("TEXT_CARD_MODE", "text_occlusion")
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
 
-    seen: list[JobStage] = []
-    original_stage = job_progress.JobProgress.stage
-
-    def recording_stage(
-        self: job_progress.JobProgress, name: JobStage, total: int | None = None
-    ) -> None:
-        seen.append(name)
-        original_stage(self, name, total)
-
-    monkeypatch.setattr(job_progress.JobProgress, "stage", recording_stage)
+    seen = _record_stages(monkeypatch)
 
     job = _upload(client, "Both Kinds", minimal_pdf_bytes)
     body = client.get(f"/jobs/{job['id']}").json()
@@ -235,11 +240,14 @@ def test_progress_percent_never_decreases_with_both_occlusion_kinds(
     assert "text_occlusion" in note_types
     assert "diagram" in note_types, "both kinds must be present for this to be meaningful"
 
+    stage_names = [stage for stage, _ in seen]
     # The stage is entered at most once, so its counter never restarts.
-    assert seen.count(JobStage.COMPOSING) == 1
+    assert stage_names.count(JobStage.COMPOSING) == 1
     # And stages still only ever move forward.
     order = list(JobStage)
-    assert [order.index(stage) for stage in seen] == sorted(order.index(s) for s in seen)
+    assert [order.index(stage) for stage in stage_names] == sorted(
+        order.index(s) for s in stage_names
+    )
 
 
 def test_text_occlusion_mode_does_not_call_the_card_generator(
@@ -286,19 +294,6 @@ def test_basic_cloze_mode_is_unchanged(
     assert all(card["note_type"] != "text_occlusion" for card in cards)
 
 
-def _upload_with_options(
-    client: TestClient, deck_name: str, pdf_bytes: bytes, options: dict[str, object]
-) -> dict[str, object]:
-    response = client.post(
-        "/jobs",
-        data={"deck_name": deck_name, "options": json.dumps(options)},
-        files={"file": ("lecture.pdf", pdf_bytes, "application/pdf")},
-    )
-    assert response.status_code == 201
-    body: dict[str, object] = response.json()
-    return body
-
-
 def test_grouped_mode_emits_one_card_per_page_per_kind(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, minimal_pdf_bytes: bytes
 ) -> None:
@@ -309,7 +304,7 @@ def test_grouped_mode_emits_one_card_per_page_per_kind(
     individual_diagrams = [c for c in individual_cards if c["note_type"] == "diagram"]
     assert len(individual_diagrams) > 1, "grouping is only meaningful with several masks"
 
-    job = _upload_with_options(
+    response = _upload_with_options(
         client,
         "Grouped",
         minimal_pdf_bytes,
@@ -319,6 +314,8 @@ def test_grouped_mode_emits_one_card_per_page_per_kind(
             "text_mask_grouping": "grouped",
         },
     )
+    assert response.status_code == 201
+    job = response.json()
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
     cards = client.get(f"/jobs/{job['id']}/cards").json()
@@ -355,18 +352,9 @@ def test_grouped_mode_composes_in_one_stage_with_a_matching_total(
 ) -> None:
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
 
-    totals: list[tuple[JobStage, int | None]] = []
-    original_stage = job_progress.JobProgress.stage
+    totals = _record_stages(monkeypatch)
 
-    def recording_stage(
-        self: job_progress.JobProgress, name: JobStage, total: int | None = None
-    ) -> None:
-        totals.append((name, total))
-        original_stage(self, name, total)
-
-    monkeypatch.setattr(job_progress.JobProgress, "stage", recording_stage)
-
-    job = _upload_with_options(
+    response = _upload_with_options(
         client,
         "Grouped Stages",
         minimal_pdf_bytes,
@@ -376,6 +364,8 @@ def test_grouped_mode_composes_in_one_stage_with_a_matching_total(
             "text_mask_grouping": "grouped",
         },
     )
+    assert response.status_code == 201
+    job = response.json()
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
     composing = [total for stage, total in totals if stage is JobStage.COMPOSING]
@@ -398,12 +388,14 @@ def test_each_kind_groups_independently(
     """One kind may be grouped while the other stays individual."""
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
 
-    baseline = _upload_with_options(
+    baseline_response = _upload_with_options(
         client,
         "Baseline",
         minimal_pdf_bytes,
         {"text_card_mode": "text_occlusion"},
     )
+    assert baseline_response.status_code == 201
+    baseline = baseline_response.json()
     baseline_cards = client.get(f"/jobs/{baseline['id']}/cards").json()
     counts = {"diagram": 0, "text_occlusion": 0}
     for card in baseline_cards:
@@ -412,7 +404,7 @@ def test_each_kind_groups_independently(
         "both kinds need several masks for grouping to be observable"
     )
 
-    job = _upload_with_options(
+    response = _upload_with_options(
         client,
         "Mixed",
         minimal_pdf_bytes,
@@ -422,6 +414,8 @@ def test_each_kind_groups_independently(
             "text_mask_grouping": text_mode,
         },
     )
+    assert response.status_code == 201
+    job = response.json()
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
     by_type: dict[str, list[dict[str, object]]] = {}
@@ -452,27 +446,20 @@ def test_disabling_diagram_occlusion_removes_diagram_cards(
 ) -> None:
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
 
-    seen: list[JobStage] = []
-    original_stage = job_progress.JobProgress.stage
+    seen = _record_stages(monkeypatch)
 
-    def recording_stage(
-        self: job_progress.JobProgress, name: JobStage, total: int | None = None
-    ) -> None:
-        seen.append(name)
-        original_stage(self, name, total)
-
-    monkeypatch.setattr(job_progress.JobProgress, "stage", recording_stage)
-
-    job = _upload_with_options(
+    response = _upload_with_options(
         client, "No Diagrams", minimal_pdf_bytes, {"diagram_occlusion_enabled": False}
     )
+    assert response.status_code == 201
+    job = response.json()
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
     cards = client.get(f"/jobs/{job['id']}/cards").json()
     assert all(card["note_type"] != "diagram" for card in cards)
     assert any(card["note_type"] in ("basic", "cloze") for card in cards)
     # The mask-detection stage must not be entered at all.
-    assert JobStage.DETECTING_MASKS not in seen
+    assert JobStage.DETECTING_MASKS not in [stage for stage, _ in seen]
 
 
 def test_disabling_diagram_occlusion_keeps_text_occlusion_cards(
@@ -480,12 +467,14 @@ def test_disabling_diagram_occlusion_keeps_text_occlusion_cards(
 ) -> None:
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
 
-    job = _upload_with_options(
+    response = _upload_with_options(
         client,
         "Text Only",
         minimal_pdf_bytes,
         {"text_card_mode": "text_occlusion", "diagram_occlusion_enabled": False},
     )
+    assert response.status_code == 201
+    job = response.json()
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
     cards = client.get(f"/jobs/{job['id']}/cards").json()
@@ -503,7 +492,7 @@ def test_explicit_default_options_match_the_env_default_run(
     baseline = _upload(client, "Same Deck", minimal_pdf_bytes)
     baseline_cards = client.get(f"/jobs/{baseline['id']}/cards").json()
 
-    explicit = _upload_with_options(
+    explicit_response = _upload_with_options(
         client,
         "Same Deck",
         minimal_pdf_bytes,
@@ -514,6 +503,8 @@ def test_explicit_default_options_match_the_env_default_run(
             "text_mask_grouping": "individual",
         },
     )
+    assert explicit_response.status_code == 201
+    explicit = explicit_response.json()
     explicit_cards = client.get(f"/jobs/{explicit['id']}/cards").json()
 
     assert [card["note_type"] for card in baseline_cards] == [
@@ -530,9 +521,11 @@ def test_job_options_override_the_environment_text_card_mode(
     monkeypatch.setenv("TEXT_CARD_MODE", "text_occlusion")
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
 
-    job = _upload_with_options(
+    response = _upload_with_options(
         client, "Env Override", minimal_pdf_bytes, {"text_card_mode": "basic_cloze"}
     )
+    assert response.status_code == 201
+    job = response.json()
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
     cards = client.get(f"/jobs/{job['id']}/cards").json()
@@ -543,23 +536,18 @@ def test_job_options_override_the_environment_text_card_mode(
 def test_text_occlusion_mode_never_enters_an_empty_stage(
     client: TestClient, monkeypatch: pytest.MonkeyPatch, minimal_pdf_bytes: bytes
 ) -> None:
-    seen: list[JobStage] = []
-    original_stage = job_progress.JobProgress.stage
-
-    def recording_stage(
-        self: job_progress.JobProgress, name: JobStage, total: int | None = None
-    ) -> None:
-        seen.append(name)
-        assert total is not None and total > 0, "a stage must never be entered with no work"
-        original_stage(self, name, total)
-
     monkeypatch.setenv("TEXT_CARD_MODE", "text_occlusion")
     monkeypatch.setattr(pipeline, "AppleVisionOcr", _StubOcr)
-    monkeypatch.setattr(job_progress.JobProgress, "stage", recording_stage)
+    seen = _record_stages(monkeypatch, assert_nonempty=True)
 
     job = _upload(client, "Stages Text", minimal_pdf_bytes)
     assert client.get(f"/jobs/{job['id']}").json()["status"] == "ready"
 
-    assert seen[:3] == [JobStage.RENDERING, JobStage.EXTRACTING, JobStage.GENERATING_CARDS]
-    assert JobStage.COMPOSING in seen
-    assert seen[-1] == JobStage.FINALIZING
+    stage_names = [stage for stage, _ in seen]
+    assert stage_names[:3] == [
+        JobStage.RENDERING,
+        JobStage.EXTRACTING,
+        JobStage.GENERATING_CARDS,
+    ]
+    assert JobStage.COMPOSING in stage_names
+    assert stage_names[-1] == JobStage.FINALIZING

@@ -6,16 +6,14 @@ already-OCR'd text items are diagram labels (and groups items that together
 form one label phrase). Boxes are derived from the OCR items themselves.
 """
 
-import base64
-import io
 import logging
 
 import anthropic
 from anthropic.types import ImageBlockParam, TextBlockParam
-from PIL import Image
 from pydantic import BaseModel, Field
 
 from app.models.occlusion import Box
+from app.services.anthropic_images import encode_page_image
 from app.services.diagram_detection.base import DetectionPage, DiagramDetectionError
 from app.services.diagram_detection.cropping import union_box
 from app.services.diagram_detection.ocr import OcrEngine, OcrItem
@@ -120,7 +118,7 @@ class AnthropicDiagramDetector:
         if not items:
             return DiagramDetection(is_labeled_diagram=False)
 
-        image_block = self._encode_page(page)
+        image_block = encode_page_image(page.image_path, self._max_edge_px)
         item_list = _build_item_list(items)
         text_block: TextBlockParam = {
             "type": "text",
@@ -176,22 +174,3 @@ class AnthropicDiagramDetector:
                 "Diagram detection response could not be parsed into the expected schema."
             )
         return parsed
-
-    def _encode_page(self, page: DetectionPage) -> ImageBlockParam:
-        with Image.open(page.image_path) as raw_image:
-            image = raw_image.convert("RGB")
-        long_edge = max(image.width, image.height)
-        if long_edge > self._max_edge_px:
-            scale = self._max_edge_px / long_edge
-            new_size = (round(image.width * scale), round(image.height * scale))
-            image = image.resize(new_size, Image.Resampling.LANCZOS)
-        buffer = io.BytesIO()
-        image.save(buffer, format="PNG")
-        return {
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/png",
-                "data": base64.standard_b64encode(buffer.getvalue()).decode("ascii"),
-            },
-        }

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from app.models.occlusion import Box
 from app.services.diagram_detection.ocr import OcrItem
-from app.services.draft_validation import _normalize
+from app.services.draft_validation import normalize_text
 from app.services.text_occlusion.schemas import SelectedSpan
 from app.services.text_occlusion.spans import (
     boxes_for_span,
@@ -102,7 +102,7 @@ def enough_context_remains(lines: list[OcrItem], span: SelectedSpan) -> bool:
 
 def is_stopword_only(text: str) -> bool:
     """True when every word of the span is a function word."""
-    words = _normalize(text).split()
+    words = normalize_text(text).split()
     if not words:
         return True
     return all(word in STOPWORDS for word in words)
@@ -150,7 +150,7 @@ def accept_spans(lines: list[OcrItem], spans: list[SelectedSpan]) -> list[Accept
             continue
         if is_stopword_only(text):
             continue
-        key = _normalize(text)
+        key = normalize_text(text)
         if not key or key in seen:
             continue
         boxes = boxes_for_span(lines, span)

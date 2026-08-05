@@ -28,7 +28,7 @@ from app.services.diagram_detection.compose import (
 )
 from app.services.diagram_detection.ocr import OcrEngine, OcrItem
 from app.services.diagram_detection.schemas import DiagramDetection, LabelDetection
-from app.services.pipeline import _build_identify_occlusions, _occlusion_is_valid
+from app.services.occlusion_pipeline import build_identify_occlusions, occlusion_is_valid
 from tests.conftest import _box
 
 
@@ -213,7 +213,10 @@ def test_detector_unions_two_passes_and_builds_label_boxes(monkeypatch: pytest.M
     ocr: OcrEngine = _FakeOcrEngine(items)
 
     detector = AnthropicDiagramDetector(model="claude-haiku-4-5", max_edge_px=1024, ocr=ocr)
-    detector._encode_page = MagicMock(return_value={"type": "image", "source": {}})  # type: ignore[method-assign]
+    monkeypatch.setattr(
+        "app.services.diagram_detection.anthropic.encode_page_image",
+        lambda *a, **k: {"type": "image", "source": {}},
+    )
 
     pass_results = [
         ClassifierResult(
@@ -271,7 +274,7 @@ def test_build_identify_one_occlusion_per_label(tmp_path: Path) -> None:
         _label("A", _box(0.2, 0.2, 0.1, 0.05)),
         _label("B", _box(0.2, 0.5, 0.1, 0.05)),
     ]
-    occlusions = _build_identify_occlusions(_detection(labels), _light_page(tmp_path))
+    occlusions = build_identify_occlusions(_detection(labels), _light_page(tmp_path))
     assert len(occlusions) == 2
     assert all(occ.direction == Direction.IDENTIFY for occ in occlusions)
     # every label's box masks the question side, regardless of which is the target
@@ -280,14 +283,14 @@ def test_build_identify_one_occlusion_per_label(tmp_path: Path) -> None:
 
 def test_build_identify_empty_when_not_a_diagram(tmp_path: Path) -> None:
     labels = [_label("A", _box(0.2, 0.2, 0.1, 0.05))]
-    occlusions = _build_identify_occlusions(
+    occlusions = build_identify_occlusions(
         _detection(labels, is_diagram=False), _light_page(tmp_path)
     )
     assert occlusions == []
 
 
 def test_build_identify_empty_when_no_labels(tmp_path: Path) -> None:
-    occlusions = _build_identify_occlusions(
+    occlusions = build_identify_occlusions(
         DiagramDetection(is_labeled_diagram=True, diagram_box=None, labels=[]),
         _light_page(tmp_path),
     )
@@ -302,7 +305,7 @@ def test_occlusion_rejects_empty_label() -> None:
         label_box=_box(0.2, 0.2, 0.1, 0.05),
         mask_boxes=[_box(0.2, 0.2, 0.1, 0.05)],
     )
-    assert not _occlusion_is_valid(occ)
+    assert not occlusion_is_valid(occ)
 
 
 # --- composition ------------------------------------------------------------

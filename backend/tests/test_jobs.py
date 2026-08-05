@@ -9,6 +9,7 @@ from app.config import get_settings
 from app.models import Job
 from app.storage import session_for
 from tests.conftest import _upload
+from tests.conftest import _upload_with_options as _upload_with_options_response
 
 DEFAULT_OPTIONS = {
     "text_card_mode": "basic_cloze",
@@ -21,11 +22,7 @@ DEFAULT_OPTIONS = {
 def _upload_with_options(
     client: TestClient, options: str, minimal_pdf_bytes: bytes
 ) -> httpx.Response:
-    return client.post(
-        "/jobs",
-        data={"deck_name": "Options", "options": options},
-        files={"file": ("lecture.pdf", minimal_pdf_bytes, "application/pdf")},
-    )
+    return _upload_with_options_response(client, "Options", minimal_pdf_bytes, options)
 
 
 def _stored_options(job_id: int) -> dict[str, object] | None:
