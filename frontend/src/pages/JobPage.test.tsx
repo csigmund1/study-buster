@@ -16,13 +16,23 @@ describe('JobPage', () => {
     server.use(
       http.get(`${API_URL}/jobs/:jobId`, () => {
         callCount += 1
-        return HttpResponse.json(makeJob({ status: callCount === 1 ? 'processing' : 'ready' }))
+        return HttpResponse.json(
+          callCount === 1
+            ? makeJob({
+                status: 'processing',
+                stage: 'generating_cards',
+                stage_label: 'Generating cards',
+                progress_percent: 45,
+                eta_seconds: 120,
+              })
+            : makeJob({ status: 'ready' }),
+        )
       }),
     )
 
     renderJobPage()
 
-    expect(await screen.findByText(/processing your pdf/i)).toBeInTheDocument()
+    expect(await screen.findByText(/generating cards/i)).toBeInTheDocument()
 
     expect(
       await screen.findByText(/card/i, undefined, { timeout: 4500 }),

@@ -94,6 +94,8 @@ React (RTK Query) -> FastAPI
   masks on a canvas overlay); the image-card MVP is preview + accept/delete only.
 
 ## Working Rules
+- NEVER commit anything.
+- NEVER make API calls.
 - Inspect nearby code before introducing a new pattern.
 - Keep frontend and backend contracts explicit and typed.
 - Prefer focused changes over unrelated cleanup.

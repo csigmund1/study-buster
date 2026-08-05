@@ -1,8 +1,9 @@
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useParams } from 'react-router-dom'
 import { http, HttpResponse } from 'msw'
-import { describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
+import type { GenerationOptions } from '../types/generationOptions'
 import { renderWithProviders } from '../test/renderWithProviders'
 import { server } from '../test/server'
 import { API_URL, makeJob } from '../test/handlers'
@@ -41,7 +42,39 @@ function getFileInput(container: HTMLElement): HTMLInputElement {
   return input
 }
 
+/**
+ * Installs a `POST /jobs` handler that captures the submitted `options` form
+ * field, so assertions run against the real intercepted request body rather
+ * than a mocked client function.
+ */
+function captureSubmittedOptions(): { current: GenerationOptions | null } {
+  const captured: { current: GenerationOptions | null } = { current: null }
+  server.use(
+    http.post(`${API_URL}/jobs`, async ({ request }) => {
+      captured.current = parseOptionsPart(await request.text())
+      return HttpResponse.json(makeJob({ status: 'pending' }), { status: 201 })
+    }),
+  )
+  return captured
+}
+
+/**
+ * Pulls the `options` part out of a raw multipart body. `request.formData()`
+ * can't be used here: undici refuses to parse a multipart body assembled from
+ * jsdom's `File`, so the raw payload is read instead.
+ */
+function parseOptionsPart(body: string): GenerationOptions | null {
+  const match = /name="options"\r?\n\r?\n([\s\S]*?)\r?\n--/.exec(body)
+  return match ? (JSON.parse(match[1]) as GenerationOptions) : null
+}
+
 describe('UploadPage', () => {
+  // The generation options persist in localStorage by design, so each case
+  // must start from a clean slate rather than inherit the previous one.
+  beforeEach(() => {
+    window.localStorage.clear()
+  })
+
   it('shows validation errors when submitted empty', async () => {
     const user = userEvent.setup()
     renderUploadPage()
@@ -125,6 +158,140 @@ describe('UploadPage', () => {
 
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /generate/i })).toBeDisabled()
+    })
+  })
+
+  describe('generation options', () => {
+    /** Scopes a radio query to one `SegmentedControl`; the two grouping
+     * controls share option labels, so an unscoped query is ambiguous. */
+    const option = (group: string, label: string) =>
+      within(screen.getByRole('radiogroup', { name: group })).getByRole('radio', { name: label })
+
+    const diagramSwitch = () => screen.getByLabelText(/generate diagram cards/i)
+
+    it('renders the four controls with the documented defaults', () => {
+      renderUploadPage()
+
+      expect(screen.getByRole('group', { name: /generation options/i })).toBeInTheDocument()
+      expect(option('Card style', 'Basic & cloze')).toBeChecked()
+      expect(diagramSwitch()).toBeChecked()
+      expect(option('Text mask grouping', 'Individual cards')).toBeChecked()
+      expect(option('Diagram mask grouping', 'Individual cards')).toBeChecked()
+    })
+
+    it('restores the last-used options after a remount', async () => {
+      const user = userEvent.setup()
+      const { unmount } = renderUploadPage()
+
+      await user.click(option('Card style', 'Text occlusion'))
+      await user.click(option('Text mask grouping', 'One card per page'))
+      unmount()
+
+      renderUploadPage()
+
+      expect(option('Card style', 'Text occlusion')).toBeChecked()
+      expect(option('Text mask grouping', 'One card per page')).toBeChecked()
+      expect(option('Diagram mask grouping', 'Individual cards')).toBeChecked()
+    })
+
+    it('sends each kind’s grouping independently', async () => {
+      const captured = captureSubmittedOptions()
+      const user = userEvent.setup()
+      const { container } = renderUploadPage()
+
+      // Diagrams individual, text occlusion all on one card.
+      await user.click(option('Card style', 'Text occlusion'))
+      await user.click(option('Text mask grouping', 'One card per page'))
+      await user.type(screen.getByLabelText(/deck name/i), 'Biology Lecture 3')
+      await user.upload(getFileInput(container), pdfFile())
+      await user.click(screen.getByRole('button', { name: /generate/i }))
+
+      await waitFor(() => {
+        expect(captured.current).toEqual({
+          text_card_mode: 'text_occlusion',
+          diagram_occlusion_enabled: true,
+          diagram_mask_grouping: 'individual',
+          text_mask_grouping: 'grouped',
+        })
+      })
+    })
+
+    it('sends the defaults when no control is touched', async () => {
+      const captured = captureSubmittedOptions()
+      const user = userEvent.setup()
+      const { container } = renderUploadPage()
+
+      await user.type(screen.getByLabelText(/deck name/i), 'Biology Lecture 3')
+      await user.upload(getFileInput(container), pdfFile())
+      await user.click(screen.getByRole('button', { name: /generate/i }))
+
+      await waitFor(() => {
+        expect(captured.current).toEqual({
+          text_card_mode: 'basic_cloze',
+          diagram_occlusion_enabled: true,
+          diagram_mask_grouping: 'individual',
+          text_mask_grouping: 'individual',
+        })
+      })
+    })
+
+    it('disables each grouping control only when its own kind is inert', async () => {
+      const user = userEvent.setup()
+      renderUploadPage()
+
+      const textGrouping = () => option('Text mask grouping', 'Individual cards')
+      const diagramGrouping = () => option('Diagram mask grouping', 'Individual cards')
+
+      // Default: basic/cloze style, diagram cards on.
+      expect(textGrouping()).toBeDisabled()
+      expect(diagramGrouping()).toBeEnabled()
+
+      // Text occlusion enables text grouping and leaves diagram grouping alone.
+      await user.click(option('Card style', 'Text occlusion'))
+      expect(textGrouping()).toBeEnabled()
+      expect(diagramGrouping()).toBeEnabled()
+
+      // Turning diagram cards off disables only the diagram grouping.
+      await user.click(diagramSwitch())
+      expect(textGrouping()).toBeEnabled()
+      expect(diagramGrouping()).toBeDisabled()
+
+      // Back to basic/cloze with diagrams still off: both are inert.
+      await user.click(option('Card style', 'Basic & cloze'))
+      expect(textGrouping()).toBeDisabled()
+      expect(diagramGrouping()).toBeDisabled()
+    })
+
+    it('upgrades a pre-split value persisted by an older build', async () => {
+      const captured = captureSubmittedOptions()
+      // The previous shape: one `mask_grouping` governing both kinds.
+      window.localStorage.setItem(
+        'study-buster:generation-options',
+        JSON.stringify({
+          text_card_mode: 'text_occlusion',
+          diagram_occlusion_enabled: true,
+          mask_grouping: 'grouped',
+        }),
+      )
+
+      const user = userEvent.setup()
+      const { container } = renderUploadPage()
+
+      expect(option('Text mask grouping', 'One card per page')).toBeChecked()
+      expect(option('Diagram mask grouping', 'One card per page')).toBeChecked()
+
+      await user.type(screen.getByLabelText(/deck name/i), 'Biology Lecture 3')
+      await user.upload(getFileInput(container), pdfFile())
+      await user.click(screen.getByRole('button', { name: /generate/i }))
+
+      await waitFor(() => {
+        expect(captured.current).toEqual({
+          text_card_mode: 'text_occlusion',
+          diagram_occlusion_enabled: true,
+          diagram_mask_grouping: 'grouped',
+          text_mask_grouping: 'grouped',
+        })
+      })
     })
   })
 })

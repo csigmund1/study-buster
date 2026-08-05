@@ -19,6 +19,9 @@ DEFAULT_RENDER_MAX_EDGE_PX = 1400
 DEFAULT_DIAGRAM_DETECTOR = "mock"
 DEFAULT_DIAGRAM_DETECTION_MODEL = "claude-haiku-4-5"
 DEFAULT_DETECTION_MAX_EDGE_PX = 1024
+DEFAULT_TEXT_CARD_MODE = "basic_cloze"
+DEFAULT_TEXT_OCCLUSION_SELECTOR = "mock"
+DEFAULT_TEXT_OCCLUSION_MODEL = "claude-haiku-4-5"
 
 
 @dataclass(frozen=True)
@@ -33,6 +36,13 @@ class Settings:
     diagram_detector: str
     diagram_detection_model: str
     detection_max_edge_px: int
+    #: Which text stage runs: "basic_cloze" (the card generator) or
+    #: "text_occlusion" (span selection). Mutually exclusive; diagram detection
+    #: runs in both modes.
+    text_card_mode: str
+    #: Span-selector implementation: "mock" or "anthropic".
+    text_occlusion_selector: str
+    text_occlusion_model: str
 
 
 def get_settings() -> Settings:
@@ -52,6 +62,11 @@ def get_settings() -> Settings:
     detection_max_edge_px = int(
         os.environ.get("DETECTION_MAX_EDGE_PX", str(DEFAULT_DETECTION_MAX_EDGE_PX))
     )
+    text_card_mode = os.environ.get("TEXT_CARD_MODE", DEFAULT_TEXT_CARD_MODE)
+    text_occlusion_selector = os.environ.get("TEXT_OCCLUSION", DEFAULT_TEXT_OCCLUSION_SELECTOR)
+    text_occlusion_model = os.environ.get(
+        "TEXT_OCCLUSION_MODEL", DEFAULT_TEXT_OCCLUSION_MODEL
+    )
     return Settings(
         data_dir=data_dir,
         database_url=database_url,
@@ -63,4 +78,7 @@ def get_settings() -> Settings:
         diagram_detector=diagram_detector,
         diagram_detection_model=diagram_detection_model,
         detection_max_edge_px=detection_max_edge_px,
+        text_card_mode=text_card_mode,
+        text_occlusion_selector=text_occlusion_selector,
+        text_occlusion_model=text_occlusion_model,
     )

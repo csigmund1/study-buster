@@ -41,6 +41,16 @@ ignore_missing_imports = true
 module = "ocrmac.*"
 ignore_missing_imports = true
 
+# pyobjc ships no stubs / py.typed marker; Vision is called through it directly
+# in services/diagram_detection/ocr.py.
+[[tool.mypy.overrides]]
+module = "objc.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "Vision.*"
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 

@@ -7,10 +7,10 @@ import { ProcessingView } from '../components/ProcessingView'
 import { ReviewView } from '../components/ReviewView'
 
 const ACTIVE_STATUSES = new Set(['pending', 'processing'])
-const POLL_INTERVAL_MS = 3000
+const POLL_INTERVAL_MS = 2000
 
 /**
- * Job page: fetches the job, polls every 3s while it's `pending`/
+ * Job page: fetches the job, polls every 2s while it's `pending`/
  * `processing`, and renders Processing, an error view (on `failed`), or
  * Review (on `ready`). Polling stops as soon as the job leaves the active
  * statuses.

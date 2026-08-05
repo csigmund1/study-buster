@@ -1,16 +1,20 @@
-"""Identify-direction image composition.
+"""Occlusion image composition, shared by diagram and text-occlusion cards.
 
-Crops the diagram region out of a rendered page and burns in the occlusion
-masks: the question image hides every label and highlights the target label's
-own mask (the pointer — "what is this?"); the answer image hides every label
-except the target's, so its text is revealed.
+Crops the card region out of a rendered page and burns in the occlusion masks:
+the question image hides every box in `mask_boxes`; the answer image hides them
+all *except* `target_boxes`, revealing the answer in place.
+
+A single-target diagram card additionally draws its target in the highlight
+style — that mask, sitting at the end of the label's arrow/leader line, is the
+pointer for "what is this?". Grouped diagram cards and every text card get no
+highlight: there is no single thing to point at.
 """
 
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from app.models.occlusion import Box, Occlusion
+from app.models.occlusion import Box, Occlusion, OcclusionKind
 
 MASK_COLOR = (60, 60, 60)
 HIGHLIGHT_FILL = (255, 213, 79)
@@ -33,7 +37,7 @@ def _crop_local_rect(box: Box, x0: float, y0: float, width: float, height: float
 def _draw_masked(
     crop: Image.Image,
     mask_boxes: list[Box],
-    skip_box: Box | None,
+    skip_boxes: list[Box],
     highlight_box: Box | None,
     page_width: int,
     page_height: int,
@@ -43,7 +47,7 @@ def _draw_masked(
     out = crop.copy()
     draw = ImageDraw.Draw(out)
     for box in mask_boxes:
-        if skip_box is not None and box == skip_box:
+        if box in skip_boxes:
             continue
         rect = _crop_local_rect(box, x0, y0, page_width, page_height)
         draw.rectangle(rect, fill=MASK_COLOR)
@@ -55,15 +59,26 @@ def _draw_masked(
     return out
 
 
-def compose_identify(
+def _pointer_box(occlusion: Occlusion) -> Box | None:
+    """The single target to draw in the highlight style, if there is one.
+
+    Only a single-target diagram card has a pointer. Grouped diagram cards and
+    all text cards return `None` — with several targets there is nothing
+    unambiguous to point at.
+    """
+    if occlusion.kind is OcclusionKind.DIAGRAM and len(occlusion.target_boxes) == 1:
+        return occlusion.target_boxes[0]
+    return None
+
+
+def compose_occlusion(
     page_image_path: Path, occlusion: Occlusion, question_out: Path, answer_out: Path
 ) -> None:
-    """Render the identify-direction question/answer images for `occlusion`.
+    """Render the question/answer images for `occlusion`.
 
-    The question image masks every label in `occlusion.mask_boxes` except the
-    target's, which is drawn in the highlight style (the pointer). The answer
-    image masks every label except the target's, revealing its text with no
-    highlight.
+    Question: every box in `mask_boxes` is filled, then a single-target diagram's
+    target is drawn over its own mask in the highlight style. Answer: every box
+    in `mask_boxes` except `target_boxes` is filled, revealing the answer.
     """
     with Image.open(page_image_path) as raw_page_image:
         page_image = raw_page_image.convert("RGB")
@@ -79,8 +94,8 @@ def compose_identify(
     question = _draw_masked(
         crop,
         occlusion.mask_boxes,
-        occlusion.label_box,
-        occlusion.label_box,
+        [],
+        _pointer_box(occlusion),
         page_width,
         page_height,
         x0,
@@ -89,7 +104,7 @@ def compose_identify(
     answer = _draw_masked(
         crop,
         occlusion.mask_boxes,
-        occlusion.label_box,
+        occlusion.target_boxes,
         None,
         page_width,
         page_height,

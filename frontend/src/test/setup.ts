@@ -41,6 +41,31 @@ if (!document.fonts) {
   })
 }
 
+// Node 26's experimental `localStorage` global shadows jsdom's implementation
+// and is inert without `--localstorage-file`, so `window.localStorage` is
+// undefined here. The Upload page remembers its generation options through
+// Mantine's `useLocalStorage`, so provide a minimal in-memory `Storage`.
+if (!window.localStorage) {
+  const store = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return store.size
+    },
+    key: (index: number) => [...store.keys()][index] ?? null,
+    getItem: (key: string) => store.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      store.set(key, String(value))
+    },
+    removeItem: (key: string) => {
+      store.delete(key)
+    },
+    clear: () => {
+      store.clear()
+    },
+  }
+  Object.defineProperty(window, 'localStorage', { value: storage, configurable: true })
+}
+
 beforeAll(() => server.listen({ onUnhandledRequest: 'error' }))
 
 // `@testing-library/react` only auto-registers its `afterEach(cleanup)` hook
