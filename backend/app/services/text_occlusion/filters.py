@@ -1,8 +1,11 @@
-"""Deterministic quality gate for selected text spans (plan §5.3).
+"""Deterministic quality gate for selected text spans.
 
-Every rule here is plain Python and independently testable. A selector may
-propose anything; nothing reaches a card without passing all of these. A page
-that yields no acceptable span simply produces no card.
+Because the selector now picks phrases from the OCR text it was shown rather
+than a page image, every returned span is locatable by construction. What
+remains here is cheap correctness/sanity checking, not quality tuning: a
+selector may still hallucinate an index, name a confidently-garbled line, or
+propose overlapping/duplicate spans across one page's batch, and nothing here
+attempts to judge whether a span is a *good* card.
 """
 
 from dataclasses import dataclass
@@ -10,6 +13,7 @@ from dataclasses import dataclass
 from app.models.occlusion import Box
 from app.services.diagram_detection.ocr import OcrItem
 from app.services.draft_validation import normalize_text
+from app.services.text_occlusion.document_context import is_chrome
 from app.services.text_occlusion.schemas import SelectedSpan
 from app.services.text_occlusion.spans import (
     boxes_for_span,
@@ -26,13 +30,8 @@ MIN_SPAN_WORDS = 1
 MAX_SPAN_WORDS = 5
 MIN_SPAN_CHARS = 3
 
-#: Visible words that must remain across the span's line(s) after masking, so
-#: the card still has enough context to be answerable.
-MIN_REMAINING_WORDS = 4
-
-#: Hard, non-configurable per-page cap. Not a user setting: it exists so one
-#: over-eager page cannot emit dozens of near-identical cards.
-MAX_SPANS_PER_PAGE = 5
+#: Loose backstop against one page runaway, not a tuned quality knob.
+MAX_SPANS_PER_PAGE = 25
 
 STOPWORDS = frozenset(
     {
@@ -61,6 +60,38 @@ def is_confident(lines: list[OcrItem], span: SelectedSpan) -> bool:
     return all(line.confidence >= MIN_LINE_CONFIDENCE for line in refs_lines if line)
 
 
+def is_chrome_span(
+    lines: list[OcrItem], span: SelectedSpan, chrome_lines: frozenset[str]
+) -> bool:
+    """True when EVERY line the span touches is deck chrome.
+
+    Defence in depth: the prompt already omits chrome lines from the numbered
+    list a selector sees, but a selector may still name one — the mock
+    proposes a span per line unconditionally, and a model can hallucinate an
+    index. A span touching a mix of chrome and content lines is judged on its
+    content lines only, so it is not rejected here.
+    """
+    refs_lines = [line_for_ref(lines, ref) for ref in span.refs]
+    if not refs_lines or any(line is None for line in refs_lines):
+        return False
+    return all(is_chrome(line.text, chrome_lines) for line in refs_lines if line)
+
+
+def is_locatable(lines: list[OcrItem], span: SelectedSpan) -> bool:
+    """True when every ref of the span resolves to at least one OCR word.
+
+    A ref resolves by locating its phrase among the line's words
+    (`spans.words_for_ref`). Failing means the selector named something that is
+    not on the line — a garbled transcription — and the honest response is to
+    drop the span rather than mask an approximation of it.
+    """
+    for ref in span.refs:
+        line = line_for_ref(lines, ref)
+        if line is None or not words_for_ref(line, ref):
+            return False
+    return bool(span.refs)
+
+
 def word_count(text: str) -> int:
     return len(text.split())
 
@@ -84,20 +115,6 @@ def covers_entire_line(lines: list[OcrItem], span: SelectedSpan) -> bool:
             return False
         covered = True
     return covered
-
-
-def enough_context_remains(lines: list[OcrItem], span: SelectedSpan) -> bool:
-    """True when >= `MIN_REMAINING_WORDS` words stay visible on the span's line(s)."""
-    masked: dict[int, int] = {}
-    totals: dict[int, int] = {}
-    for ref in span.refs:
-        line = line_for_ref(lines, ref)
-        if line is None:
-            return False
-        totals[ref.line_index] = len(line.words)
-        masked[ref.line_index] = masked.get(ref.line_index, 0) + len(words_for_ref(line, ref))
-    remaining = sum(totals[index] - min(masked[index], totals[index]) for index in totals)
-    return remaining >= MIN_REMAINING_WORDS
 
 
 def is_stopword_only(text: str) -> bool:
@@ -128,11 +145,16 @@ def _overlaps_accepted(boxes: list[Box], accepted: list[AcceptedSpan]) -> bool:
     )
 
 
-def accept_spans(lines: list[OcrItem], spans: list[SelectedSpan]) -> list[AcceptedSpan]:
+def accept_spans(
+    lines: list[OcrItem],
+    spans: list[SelectedSpan],
+    chrome_lines: frozenset[str] = frozenset(),
+) -> list[AcceptedSpan]:
     """Apply every rule, in order, returning the spans worth making cards from.
 
     Order matters only for the page-scoped rules (overlap, dedup, cap): earlier
-    spans win, so a selector's own ordering is its preference ordering.
+    spans win, so a selector's own ordering is its preference ordering. A page
+    that yields no acceptable span simply produces no card.
     """
     accepted: list[AcceptedSpan] = []
     seen: set[str] = set()
@@ -141,22 +163,24 @@ def accept_spans(lines: list[OcrItem], spans: list[SelectedSpan]) -> list[Accept
             break
         if not is_confident(lines, span):
             continue
+        if is_chrome_span(lines, span, chrome_lines):
+            continue
+        if not is_locatable(lines, span):
+            continue
         text = span_text(lines, span)
         if not is_acceptable_size(text):
             continue
-        if covers_entire_line(lines, span):
-            continue
-        if not enough_context_remains(lines, span):
-            continue
         if is_stopword_only(text):
             continue
-        key = normalize_text(text)
-        if not key or key in seen:
+        if covers_entire_line(lines, span):
             continue
         boxes = boxes_for_span(lines, span)
         if boxes is None:
             continue
         if _overlaps_accepted(boxes, accepted):
+            continue
+        key = normalize_text(text)
+        if not key or key in seen:
             continue
         seen.add(key)
         accepted.append(AcceptedSpan(answer=text, boxes=boxes))

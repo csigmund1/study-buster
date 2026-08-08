@@ -22,6 +22,7 @@ DEFAULT_DETECTION_MAX_EDGE_PX = 1024
 DEFAULT_TEXT_CARD_MODE = "basic_cloze"
 DEFAULT_TEXT_OCCLUSION_SELECTOR = "mock"
 DEFAULT_TEXT_OCCLUSION_MODEL = "claude-haiku-4-5"
+DEFAULT_TEXT_OCCLUSION_BATCH_PAGES = 10
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,8 @@ class Settings:
     #: Span-selector implementation: "mock" or "anthropic".
     text_occlusion_selector: str
     text_occlusion_model: str
+    #: How many pages' OCR text are batched into one text-only selection call.
+    text_occlusion_batch_pages: int
 
 
 def get_settings() -> Settings:
@@ -67,6 +70,9 @@ def get_settings() -> Settings:
     text_occlusion_model = os.environ.get(
         "TEXT_OCCLUSION_MODEL", DEFAULT_TEXT_OCCLUSION_MODEL
     )
+    text_occlusion_batch_pages = int(
+        os.environ.get("TEXT_OCCLUSION_BATCH_PAGES", str(DEFAULT_TEXT_OCCLUSION_BATCH_PAGES))
+    )
     return Settings(
         data_dir=data_dir,
         database_url=database_url,
@@ -81,4 +87,5 @@ def get_settings() -> Settings:
         text_card_mode=text_card_mode,
         text_occlusion_selector=text_occlusion_selector,
         text_occlusion_model=text_occlusion_model,
+        text_occlusion_batch_pages=text_occlusion_batch_pages,
     )

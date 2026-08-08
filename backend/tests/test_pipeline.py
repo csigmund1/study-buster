@@ -176,6 +176,12 @@ class _StubOcr:
 
     The test PDF renders as a blank page, so real OCR would find no text at all;
     stubbing here keeps the mock pipeline deterministic and off the OCR engine.
+
+    The lines are stacked one line-height apart, as a real slide's are, because
+    `filters.enough_context_remains` measures the words left visible in a span's
+    local window rather than on its own line. Two lines a third of a page apart
+    fall outside each other's window and each leave too little context to yield
+    any card, which says nothing about the pipeline.
     """
 
     def __init__(self) -> None:
@@ -184,8 +190,10 @@ class _StubOcr:
     def extract(self, image_path: Path) -> list[OcrItem]:
         self.pages.append(image_path)
         return [
-            make_line(SENTENCE, top=0.1),
-            make_line("glomerular filtration produces the primary urine", top=0.3),
+            make_line(SENTENCE, top=0.10),
+            make_line("glomerular filtration produces the primary urine", top=0.15),
+            make_line("the proximal tubule reabsorbs most filtered solute", top=0.20),
+            make_line("countercurrent exchange concentrates the medullary gradient", top=0.25),
         ]
 
 
