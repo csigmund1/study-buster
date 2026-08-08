@@ -26,13 +26,33 @@ from app.schemas.generation_options import GenerationOptions, MaskGrouping
 from app.services.diagram_detection import DetectionPage, DiagramDetection, get_diagram_detector
 from app.services.diagram_detection.compose import compose_occlusion
 from app.services.diagram_detection.cropping import FULL_PAGE, derive_crop
-from app.services.diagram_detection.ocr import OcrEngine
+from app.services.diagram_detection.ocr import OcrEngine, OcrItem
+from app.services.document_processing import extract_page_styles
+from app.services.draft_validation import normalize_text
 from app.services.job_progress import JobProgress, enter_stage
 from app.services.occlusion_grouping import group_occlusions
-from app.services.text_occlusion import TextPage, accept_spans, get_text_span_selector
+from app.services.text_occlusion import (
+    SelectedSpan,
+    TextPage,
+    accept_spans,
+    detect_chrome_lines,
+    detect_objectives,
+    get_text_span_selector,
+)
+from app.services.text_occlusion.emphasis import annotate_emphasis
+from app.services.text_occlusion.filters import MIN_LINE_CONFIDENCE
 from app.storage import card_image_path
 
 _BOX_EPSILON = 1e-3
+
+#: A page with at least this many confident OCR lines, averaging at least this
+#: many words each, reads as dense prose rather than a diagram: the diagram
+#: classifier downstream is authoritative and comparatively cheap to run, so
+#: this shortlist only exists to skip pages that are clearly all-text. It errs
+#: toward inclusion — missing a real diagram is worse than one wasted
+#: classifier call on a prose page that slips through.
+DIAGRAM_PROSE_MIN_LINES = 20
+DIAGRAM_PROSE_MIN_AVG_WORDS = 5.0
 
 #: Front text for a grouped occlusion card, which asks for every answer on the
 #: page at once. Individual cards keep their own per-mask front text.
@@ -117,6 +137,35 @@ def _answer_text(occlusion: Occlusion) -> str:
     return ", ".join(occlusion.labels)
 
 
+def dedupe_answers_across_pages(pending: list[PendingOcclusion]) -> list[PendingOcclusion]:
+    """Drop occlusions whose answer an earlier one already asked for, job-wide.
+
+    `filters.accept_spans` dedupes only within a page — it is handed one page's
+    lines and cannot see the rest of the deck — but a lecture deck restates its
+    own key terms, so the same phrase is genuinely selectable on several slides.
+    One real-mode job carded `Frank-Starling mechanism` three times, from pages
+    5, 8, and 10.
+
+    Shaped after `draft_validation.validate_and_dedupe`, which does the same job
+    for the basic/cloze path: one pass over the accumulated list, normalized
+    keys, order preserved. Only the LATER occlusion is dropped, so the earliest
+    page — and within a page the selector's own preference ordering — wins.
+
+    Runs on ungrouped occlusions, one answer each, before `group_pending` merges
+    a page's masks into a single card.
+    """
+    seen: set[str] = set()
+    deduped: list[PendingOcclusion] = []
+    for item in pending:
+        key = normalize_text(_answer_text(item.occlusion))
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
 def _detect_occlusions(
     settings: Settings,
     image_dir: Path,
@@ -162,44 +211,96 @@ def select_text_occlusions(
     page_count: int,
     progress: JobProgress,
     ocr: OcrEngine,
-) -> tuple[list[PendingOcclusion], list[int]]:
-    """Run text-span selection over every page, returning the pending text
-    occlusions plus the pages the selector flagged as labeled diagrams (§5.4).
+    texts: list[str],
+    pdf_path: Path,
+) -> list[PendingOcclusion]:
+    """Run batched, text-only span selection over every page, returning the
+    pending text occlusions.
 
-    Non-fatal per page: OCR or selection failing drops that page's text cards
-    only. Everything after selection is deterministic, so failures there are
+    Diagram detection is fully decoupled from this: it no longer reads a
+    "labeled diagram" flag out of a text-occlusion response — see
+    `shortlist_diagram_pages`.
+
+    Non-fatal: a failed selection call drops spans for whatever pages it
+    covered rather than failing the job — the batch is simply treated as
+    empty. Everything after selection is deterministic, so failures there are
     bugs and are not swallowed.
-    """
-    selector = get_text_span_selector(settings)
-    pending: list[PendingOcclusion] = []
-    diagram_pages: list[int] = []
 
+    Answers are deduped across pages as well as within them: `accept_spans` sees
+    one page at a time, so the job-wide pass is `dedupe_answers_across_pages`
+    over the accumulated result.
+    """
+    # OCR every page up front, in page order, so `detect_chrome_lines` can see
+    # the whole deck's furniture before any page is selected. The engine caches
+    # per resolved image path, so a later `ocr.extract` call for the same page
+    # (e.g. from diagram detection) is free — this is not a double OCR pass.
+    pages_lines: list[list[OcrItem]] = []
+    for page_number in range(1, page_count + 1):
+        page_image = image_dir / f"page_{page_number}.png"
+        if not page_image.is_file():
+            pages_lines.append([])
+            continue
+        try:
+            pages_lines.append(ocr.extract(page_image))
+        except Exception:  # per-page OCR failure: this page contributes no lines
+            pages_lines.append([])
+
+    chrome_lines = detect_chrome_lines(pages_lines)
+
+    # A learning-objectives / agenda slide is deck-level context, not a mask
+    # source: its objectives steer which content spans are worth choosing, so it
+    # is passed to the selector but never itself carded.
+    objectives, objectives_pages = detect_objectives(texts)
+
+    # The lecturer's bold/italic emphasis, recovered from the PDF font layer and
+    # matched onto OCR lines so the selector can prioritize it. Best-effort: a
+    # PDF whose styles cannot be read simply yields no emphasis, never a failed
+    # job.
+    try:
+        page_styles = extract_page_styles(pdf_path)
+    except Exception:
+        page_styles = []
+
+    pages = [
+        TextPage(
+            page_number=page_number,
+            lines=annotate_emphasis(
+                lines,
+                page_styles[page_number - 1] if page_number - 1 < len(page_styles) else [],
+            ),
+        )
+        for page_number, lines in enumerate(pages_lines, start=1)
+        if lines and page_number not in objectives_pages
+    ]
+
+    selector = get_text_span_selector(settings)
+    try:
+        spans = selector.select(pages, chrome_lines, objectives=objectives)
+    except Exception:  # selection is best-effort; a failure yields no spans at all
+        spans = []
+
+    spans_by_page: dict[int, list[SelectedSpan]] = {}
+    for span in spans:
+        if not span.refs:
+            continue
+        spans_by_page.setdefault(span.refs[0].page_number, []).append(span)
+
+    pending: list[PendingOcclusion] = []
     for page_number in range(1, page_count + 1):
         page_image = image_dir / f"page_{page_number}.png"
         if not page_image.is_file():
             progress.advance()
             continue
 
-        try:
-            lines = ocr.extract(page_image)
-            selection = selector.select(
-                TextPage(page_number=page_number, image_path=page_image, lines=lines)
-            )
-        except Exception:  # selection is best-effort; a failure drops this page only
-            progress.advance()
-            continue
-
-        if selection.is_labeled_diagram:
-            diagram_pages.append(page_number)
-
-        for span in accept_spans(lines, selection.spans):
+        lines = pages_lines[page_number - 1]
+        for accepted in accept_spans(lines, spans_by_page.get(page_number, []), chrome_lines):
             occ = Occlusion(
                 kind=OcclusionKind.TEXT,
                 direction=Direction.IDENTIFY,
-                labels=[span.answer],
+                labels=[accepted.answer],
                 crop_box=FULL_PAGE,  # text cards are not cropped in v1
-                target_boxes=span.boxes,
-                mask_boxes=span.boxes,
+                target_boxes=accepted.boxes,
+                mask_boxes=accepted.boxes,
             )
             pending.append(
                 PendingOcclusion(
@@ -212,7 +313,47 @@ def select_text_occlusions(
             )
         progress.advance()
 
-    return pending, diagram_pages
+    return dedupe_answers_across_pages(pending)
+
+
+def shortlist_diagram_pages(image_dir: Path, page_count: int, ocr: OcrEngine) -> list[int]:
+    """The 1-indexed pages worth running the diagram classifier on.
+
+    Free: OCR is cached per resolved image path by `ocr`, so this reuses
+    whatever `select_text_occlusions` (or an earlier call to this function)
+    already recognized. Conservative by design — the double-pass Haiku
+    classifier downstream is authoritative on whether a page is really a
+    labeled diagram, so this shortlist only needs to rule out pages that are
+    unambiguously dense prose, never to positively identify a diagram. A page
+    is skipped only when it has at least `DIAGRAM_PROSE_MIN_LINES` confident
+    lines AND averages at least `DIAGRAM_PROSE_MIN_AVG_WORDS` words per
+    confident line; a page with no OCR lines is not a candidate (there is
+    nothing to run the classifier on).
+    """
+    candidates: list[int] = []
+    for page_number in range(1, page_count + 1):
+        page_image = image_dir / f"page_{page_number}.png"
+        if not page_image.is_file():
+            continue
+        try:
+            lines = ocr.extract(page_image)
+        except Exception:  # OCR failure: not a candidate, nothing to classify from
+            continue
+        if not lines:
+            continue
+
+        confident = [line for line in lines if line.confidence >= MIN_LINE_CONFIDENCE]
+        if not confident:
+            candidates.append(page_number)
+            continue
+
+        avg_words = sum(len(line.text.split()) for line in confident) / len(confident)
+        is_dense_prose = (
+            len(confident) >= DIAGRAM_PROSE_MIN_LINES and avg_words >= DIAGRAM_PROSE_MIN_AVG_WORDS
+        )
+        if not is_dense_prose:
+            candidates.append(page_number)
+    return candidates
 
 
 def compose_occlusion_cards(

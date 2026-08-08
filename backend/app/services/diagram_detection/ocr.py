@@ -51,6 +51,11 @@ class OcrItem(BaseModel):
     confidence: float = 1.0
     #: Per-word boxes, in text order. Empty for engines that cannot supply them.
     words: list[OcrWord] = Field(default_factory=list)
+    #: Set by text occlusion when this line's printed text is the lecturer's own
+    #: bold/italic emphasis (matched from the PDF font layer). OCR itself never
+    #: sets it — Apple Vision carries no font style — and other consumers (e.g.
+    #: diagram detection) ignore it.
+    emphasized: bool = False
 
 
 class OcrEngine(Protocol):

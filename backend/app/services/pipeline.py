@@ -26,6 +26,7 @@ from app.services.occlusion_pipeline import (
     detect_diagram_occlusions,
     group_pending,
     select_text_occlusions,
+    shortlist_diagram_pages,
 )
 from app.storage import pages_dir, session_for
 from app.storage.paths import original_pdf_path
@@ -115,14 +116,17 @@ def _process_job(
     # so a page is recognized exactly once no matter who asks.
     ocr = AppleVisionOcr()
 
-    # The two text stages are mutually exclusive; whichever runs also supplies the
-    # diagram shortlist (plan §5.4). Diagram detection itself runs in both modes.
+    # The two text stages are mutually exclusive. Each supplies the diagram
+    # shortlist its own way: basic_cloze gets it free from the card generator,
+    # text_occlusion derives it deterministically from OCR. Diagram detection
+    # itself then runs in both modes.
     text_pending: list[PendingOcclusion] = []
     if options.text_card_mode is TextCardMode.TEXT_OCCLUSION:
         enter_stage(progress, JobStage.GENERATING_CARDS, page_count)
-        text_pending, diagram_pages = select_text_occlusions(
-            settings, image_dir, page_count, progress, ocr
+        text_pending = select_text_occlusions(
+            settings, image_dir, page_count, progress, ocr, texts, pdf_path
         )
+        diagram_pages = shortlist_diagram_pages(image_dir, page_count, ocr)
     else:
         groups = _build_page_groups(job.deck_name, image_dir, texts, settings.page_group_size)
         enter_stage(progress, JobStage.GENERATING_CARDS, len(groups))

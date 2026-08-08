@@ -117,7 +117,7 @@ React (RTK Query) -> FastAPI
 
 ## Commands
 - Run both dev servers (mock mode, no API key needed): use the `run` skill, or `./scripts/dev.sh up` / `down` / `status` / `logs`.
-- Real-mode testing (real card generator + diagram detector, hits the Anthropic API): `CARD_GENERATOR=anthropic DIAGRAM_DETECTOR=anthropic ANTHROPIC_API_KEY=… ./scripts/dev.sh up` (or `down` then the harness-tracked `fg-backend`/`fg-frontend` per the `run` skill). `CARD_GENERATOR` alone only switches text-card generation (Haiku) — diagram/mask detection (local OCR + Haiku classifier) is gated separately by `DIAGRAM_DETECTOR` and defaults to mock. `ANTHROPIC_API_KEY` lives in `~/.zshrc`; source it rather than hardcoding it in a command.
+- Real-mode testing (hits the Anthropic API): `CARD_GENERATOR=anthropic DIAGRAM_DETECTOR=anthropic TEXT_OCCLUSION=anthropic ./scripts/dev.sh up` (or `down` then the harness-tracked `fg-backend`/`fg-frontend` per the `run` skill). All three are gated separately and each defaults to mock, so omitting one silently mixes mock output into a real run: `CARD_GENERATOR` switches basic/cloze generation (Haiku), `DIAGRAM_DETECTOR` switches diagram/mask detection (local OCR + Haiku classifier), and `TEXT_OCCLUSION` switches text-occlusion span selection (Haiku). `ANTHROPIC_API_KEY` lives in `~/.zshrc`; source it rather than hardcoding it in a command.
 - Frontend install: `cd frontend && npm install`
 - Frontend dev only: `cd frontend && npm run dev`
 - Frontend checks (lint, typecheck, test, build): `cd frontend && ./check.sh`
