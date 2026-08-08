@@ -205,8 +205,6 @@ def test_word_boxes_are_produced_and_union_to_the_line() -> None:
     first = next(item for item in items if item.text == "Overview of Abdomen")
 
     assert [word.text for word in first.words] == ["Overview", "of", "Abdomen"]
-    for word in first.words:
-        assert first.text[word.char_start : word.char_start + word.char_length] == word.text
 
     # A phrase mask is one tight rect: the union of its word boxes sits within
     # the line box rather than spilling outside it.

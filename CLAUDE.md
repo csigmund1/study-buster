@@ -21,6 +21,11 @@ deployment.
   OCR items are diagram labels. Crops are derived deterministically
   (whitespace-snap). No structure-level boxes; the target's label mask is the
   highlight.
+- Text occlusion: one cached Apple Vision OCR pass supplies exact words and
+  geometry. Batched `claude-haiku-4-5` selection receives 512px slide previews
+  for layout context plus indexed OCR text as the only legal mask source.
+  Selection is identical for grouped and individual modes; grouping only changes
+  how the accepted per-slide masks become cards.
 - Export: `genanki`, with rendered page images attached as media.
 - Tests: use the test frameworks already configured in each package (see Commands).
 
@@ -49,8 +54,8 @@ React (RTK Query) -> FastAPI
 - FastAPI routes validate, persist, and start jobs; they hold no
   document-processing logic — that lives in plain Python services.
 - The model does content understanding only, one structured-output call per
-  page group. Rendering, chunking, text extraction, validation, dedup, CRUD,
-  and packaging are all deterministic Python.
+  page group. Rendering, chunking, text extraction, localization, structural
+  validation, CRUD, and packaging are deterministic Python.
 
 ## Data Model
 - **Job**: `id`, `deck_name`, `pdf_path`, `page_count`, `status`

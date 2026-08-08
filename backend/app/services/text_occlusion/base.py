@@ -1,12 +1,13 @@
 """`TextSpanSelector` protocol: picks which OCR text spans to mask across a deck.
 
-Selection is text-only and batched: the selector is handed several already-OCR'd
-pages at once and returns a flat list of spans, each addressed by
-`(page_number, line_index)` via its refs. No page image is sent — the model
-chooses from the OCR text it is shown, so every returned phrase is locatable.
+Selection is batched and visually informed: the selector is handed several
+already-OCR'd pages plus their rendered images and returns a flat list of spans.
+The image supplies layout and emphasis only; each returned phrase must name the
+exact OCR line text it masks, so geometry stays deterministic.
 """
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 from app.services.diagram_detection.ocr import OcrItem
@@ -28,6 +29,7 @@ class TextPage:
     """
 
     page_number: int  # 1-indexed, matches the real PDF page number
+    image_path: Path
     lines: list[OcrItem]
 
 

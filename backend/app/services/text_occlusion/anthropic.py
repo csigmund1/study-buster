@@ -1,14 +1,19 @@
-"""Text-span selection: text-only, batched across several pages per call.
+"""Text-span selection: low-resolution visual context plus exact OCR text.
 
-The model never sees a page image or predicts geometry. It is shown the
-numbered OCR lines of a batch of pages (already OCR'd and chrome-filtered by
-the caller) and returns, per chosen phrase, the page it is on, the line index
-it occupies, and the phrase text. `spans.py` locates each phrase among the
-line's OCR words and turns the located words into boxes; `filters.py` decides
-what survives.
+The model sees a cheap slide thumbnail so it can understand hierarchy, layout,
+and emphasis, but it never predicts geometry or transcribes the answer from the
+image. It must choose exact phrases from the numbered OCR lines shown beside the
+preview. `spans.py` maps those phrases back to OCR word boxes and `filters.py`
+applies structural safety checks.
 """
 
+import base64
+import logging
+from io import BytesIO
+
 import anthropic
+from anthropic.types import ImageBlockParam, TextBlockParam
+from PIL import Image
 
 from app.services.text_occlusion.base import TextOcclusionError, TextPage
 from app.services.text_occlusion.document_context import is_chrome
@@ -20,52 +25,71 @@ from app.services.text_occlusion.filters import (
 from app.services.text_occlusion.schemas import BatchSelection, SelectedSpan
 
 MAX_TOKENS = 16000
+THUMBNAIL_MAX_EDGE_PX = 512
+THUMBNAIL_JPEG_QUALITY = 70
+
+# Uvicorn configures this logger at INFO in both foreground and detached dev
+# modes, so per-batch token usage is visible in the backend log without changing
+# the application's global logging policy.
+logger = logging.getLogger("uvicorn.error")
 
 SYSTEM_PROMPT = f"""\
-You are given several lecture slides' worth of text. Apple Vision OCR \
-extracted numbered lines of text from each slide; the user message lists the \
-slides one at a time, each headed by its page number, followed by that \
-page's numbered OCR lines with their exact text.
+You choose high-quality fill-in-the-blank masks for lecture slides. For each \
+page, the user message provides a low-resolution preview followed by numbered \
+Apple Vision OCR lines containing the exact selectable text.
 
-Choose the phrases a student should be quizzed on by hiding them on the \
-slide (fill-in-the-blank). For each chosen phrase return the page_number and \
-line_index it occupies and the phrase exactly as it reads on that line.
+Use the preview only to understand hierarchy, layout, columns, diagrams, and \
+visual emphasis. Never transcribe a mask from the preview. Every returned ref \
+must quote exact text from one of that page's numbered OCR lines; deterministic \
+code turns those refs into mask geometry.
 
-A line tagged [EMPHASIZED] is the lecturer's own bold or italic emphasis on \
-the original slide — a strong signal that its text is worth recalling. Treat \
-emphasized text as a high-priority target and mask it whenever it is a \
-content phrase (still obeying every rule below). If an emphasized phrase wraps \
-across consecutive [EMPHASIZED] lines, hide it whole as one span with a ref \
-per line, in reading order. The tag marks the whole line; choose the content \
-phrase within it, not the surrounding function words.
+The same selected masks are used in two modes: one card per mask, or every mask \
+on the page hidden together. Therefore choose one shared set that remains \
+answerable even when all selected masks on the page are hidden simultaneously. \
+Do not select two facts when hiding either one removes the cue needed to recall \
+the other.
 
-What makes a phrase worth hiding — prefer, in roughly this order:
-- Text the slide emphasizes in bold or italic (tagged [EMPHASIZED]).
-- The term a definition is defining, or the load-bearing half of the definition.
+Select only material whose recall helps a student learn the lecture:
+- The term a definition is defining, while leaving its explanatory cue visible.
 - Named mechanisms, effects, laws, and relationships.
 - Complete multiword technical terms. Hide the whole term, never one word of it: \
-"Parietal peritoneum", not "Parietal"; "length-dependent activation", not \
-"activation".
+  "Parietal peritoneum", not "Parietal"; "length-dependent activation", not \
+  "activation".
 - The named steps of a process, and what distinguishes one step from the next.
 - The terms on either side of a contrast or comparison.
 - Values, thresholds, ranges, units, and formulas.
 - Classifications and the category a thing belongs to.
+- Content the lecturer visually emphasizes, when it is one of the targets above.
 
-What to leave visible:
-- Function words and connectives ("through the", "dividing", "as noted", \
-"however"), and any phrase that is grammar rather than content.
+Never select:
+- Function words, connectives, predicate fragments, or prose that merely \
+  completes the sentence. Bad masks include "through the", "dividing", \
+  "is a function of", "only mechanism", "increased preload produces", and \
+  "blood to back up".
 - Incidental language: dates, citations, author names, institution names, \
-slide furniture, and narrative filler.
+  slide furniture, and narrative filler.
 - Anything whose removal leaves a blank a student could not reasonably fill \
-from what remains visible — if the sentence no longer says what is being asked, \
-the card is unanswerable.
-- Anything already spelled out elsewhere on the same slide, which gives the \
-answer away.
+  from what remains visible after every selected mask is hidden.
+- A definition sentence or descriptive clause as one large answer. Prefer the \
+  named term, value, or relationship it teaches.
 
-Worked examples:
+Term boundaries and repeated answers:
+- Function words inside one canonical term stay inside its mask: \
+  "Law of the Heart" is one complete term.
+- Coordinated concepts become separate masks and the conjunction stays visible: \
+  in "Rest Potentiation and Post-Extrasystolic Potentiation", select \
+  "Rest Potentiation" and "Post-Extrasystolic Potentiation" separately, not \
+  the whole phrase and never "and".
+- Select a concept only once per page. Put its best-context occurrence in \
+  `refs`. Put every other visible occurrence or obvious equivalent that would \
+  reveal the answer in `leakage_refs`, so it is hidden on the same card. If \
+  hiding all revealing occurrences removes the useful recall cue, omit the \
+  concept instead.
+
+Examples:
 - Slide reads "Parietal peritoneum (lines the abdominal cavity)". \
-GOOD: "Parietal peritoneum" — the complete term being defined. \
-BAD: "Parietal" — half a technical term. BAD: "lines the" — grammar.
+  GOOD: "Parietal peritoneum" — the complete term being defined. \
+  BAD: "Parietal" — half a technical term. BAD: "lines the" — grammar.
 - Slide reads "cardiac muscle force peaks sharply at a longer sarcomere length \
 of ~2.4 um". GOOD: "~2.4 um" — a threshold worth recalling. \
 BAD: "peaks sharply" — description, not content.
@@ -74,30 +98,26 @@ diagram with no prose. GOOD: return no spans for that page — skip it \
 entirely. Returning nothing for such a page is a correct, expected answer — \
 never invent a target to fill a quota.
 
-How many to choose: cover every distinct thing on the slide worth recalling. \
-Each separate term, named mechanism, value, threshold, contrast, or step is its \
-own card — do not stop at the first one or two. A dense prose slide should yield \
-many masks (commonly five to ten or more), one for each gradeable fact it \
-states; a sparse slide yields fewer, and a meta slide yields none. Err toward \
-covering more relevant content rather than less. The only real limit is \
-answerability: stop adding masks on a slide when hiding another phrase would \
-leave a blank a reader could no longer fill from what stays visible.
+There is no mask quota. Select every distinct high-value learning target that \
+passes the rules, and nothing merely to increase the count. A dense slide may \
+produce several masks, a sparse slide fewer, and a meta slide none. Quality, \
+collective answerability, and non-redundancy always matter more than coverage.
 
 Rules:
 - 1-{MAX_SPAN_WORDS} words per phrase, never a whole line or sentence, never a \
-bare function word (the, of, is, ...).
-- Leave enough surrounding text visible on the slide that the blank is answerable.
-- Never choose overlapping phrases, and never choose the same phrase twice, \
-whether on one slide or across slides.
+  bare function word (the, of, is, ...).
+- Leave enough surrounding text visible after all chosen masks are applied.
+- Never choose overlapping learning targets or the same concept twice on one slide. \
+  Repetition on different slides is allowed and often pedagogically useful.
 - Skip lines whose text looks garbled or misrecognized.
 - Skip title, agenda, learning-objectives, and disclaimer slides entirely: \
 return no spans for them.
 - Return at most {MAX_SPANS_PER_PAGE} spans per page, best first.
-- `answer` is the whole phrase, exactly as it reads on the slide; each ref's \
-`text` is that phrase's fragment on its own line, and every ref of one span \
-names the same page_number.
+- Each span names its `page_number` once. `refs` contains the answer's best-context \
+  occurrence; each ref's `text` is that occurrence's fragment on its own line. \
+  `leakage_refs` contains other revealing occurrences on the same page.
 - If a phrase wraps onto the next line (still on the same page), return one \
-ref per line fragment, in reading order, all sharing that span's answer.
+  ref per line fragment in `refs`, in reading order.
 
 Only use page numbers and line indices that appear in the listing below.
 """
@@ -126,7 +146,7 @@ def _format_page(page: TextPage, chrome_lines: frozenset[str]) -> str | None:
     presentation filter, not a re-indexing.
     """
     lines = [
-        f'[{index}] "{line.text}"' + ("  [EMPHASIZED]" if line.emphasized else "")
+        f'[{index}] "{line.text}"'
         for index, line in enumerate(page.lines)
         if line.confidence >= MIN_LINE_CONFIDENCE and not is_chrome(line.text, chrome_lines)
     ]
@@ -139,8 +159,34 @@ def _batches(pages: list[TextPage], batch_pages: int) -> list[list[TextPage]]:
     return [pages[i : i + batch_pages] for i in range(0, len(pages), batch_pages)]
 
 
+def _thumbnail_block(image_path: str) -> ImageBlockParam:
+    """A cheap layout preview; OCR text remains the source of every answer."""
+    with Image.open(image_path) as raw:
+        thumbnail = raw.convert("RGB")
+        thumbnail.thumbnail(
+            (THUMBNAIL_MAX_EDGE_PX, THUMBNAIL_MAX_EDGE_PX), Image.Resampling.LANCZOS
+        )
+        encoded = BytesIO()
+        thumbnail.save(
+            encoded,
+            format="JPEG",
+            quality=THUMBNAIL_JPEG_QUALITY,
+            optimize=True,
+        )
+    return {
+        "type": "image",
+        "source": {
+            "type": "base64",
+            "media_type": "image/jpeg",
+            "data": base64.standard_b64encode(encoded.getvalue()).decode("ascii"),
+        },
+    }
+
+
 class AnthropicTextSpanSelector:
     def __init__(self, model: str, batch_pages: int) -> None:
+        if batch_pages <= 0:
+            raise ValueError("TEXT_OCCLUSION_BATCH_PAGES must be greater than zero")
         self._model = model
         self._batch_pages = batch_pages
         self._client = anthropic.Anthropic()
@@ -153,25 +199,38 @@ class AnthropicTextSpanSelector:
     ) -> list[SelectedSpan]:
         spans: list[SelectedSpan] = []
         for batch in _batches(pages, self._batch_pages):
-            listings = [
-                formatted
+            prepared = [
+                (page, formatted)
                 for page in batch
                 if (formatted := _format_page(page, chrome_lines)) is not None
             ]
-            if not listings:
+            if not prepared:
                 continue  # every page in this batch was empty or all-chrome
-
-            spans.extend(self._select_batch(listings, objectives))
+            try:
+                spans.extend(self._select_batch(prepared, objectives))
+            except TextOcclusionError as exc:
+                page_numbers = [page.page_number for page, _listing in prepared]
+                logger.warning(
+                    "Text-occlusion selection failed for pages %s: %s", page_numbers, exc
+                )
         return spans
 
     def _select_batch(
-        self, listings: list[str], objectives: str | None
+        self, prepared: list[tuple[TextPage, str]], objectives: str | None
     ) -> list[SelectedSpan]:
-        text = "\n\n".join(listings)
+        content: list[TextBlockParam | ImageBlockParam] = []
         if objectives:
-            # Objectives ride in the user message so the cached system prompt
-            # stays byte-identical; prepended so the model reads them first.
-            text = f"{OBJECTIVES_PREFACE}{objectives}\n\n{text}"
+            content.append({"type": "text", "text": f"{OBJECTIVES_PREFACE}{objectives}"})
+        try:
+            for page, listing in prepared:
+                content.append(
+                    {"type": "text", "text": f"Low-resolution preview for page {page.page_number}:"}
+                )
+                content.append(_thumbnail_block(str(page.image_path)))
+                content.append({"type": "text", "text": listing})
+        except OSError as exc:
+            raise TextOcclusionError(f"Could not build a slide preview: {exc}") from exc
+
         try:
             response = self._client.messages.parse(
                 model=self._model,
@@ -183,7 +242,7 @@ class AnthropicTextSpanSelector:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=[{"role": "user", "content": [{"type": "text", "text": text}]}],
+                messages=[{"role": "user", "content": content}],
                 output_format=BatchSelection,
             )
         except (anthropic.APIStatusError, anthropic.APIConnectionError) as exc:
@@ -194,4 +253,14 @@ class AnthropicTextSpanSelector:
             raise TextOcclusionError(
                 "Text span selection response could not be parsed into the expected schema."
             )
+        usage = response.usage
+        logger.info(
+            "Text-occlusion selection usage pages=%s input_tokens=%s output_tokens=%s "
+            "cache_creation_input_tokens=%s cache_read_input_tokens=%s",
+            [page.page_number for page, _listing in prepared],
+            usage.input_tokens,
+            usage.output_tokens,
+            getattr(usage, "cache_creation_input_tokens", 0) or 0,
+            getattr(usage, "cache_read_input_tokens", 0) or 0,
+        )
         return parsed.spans

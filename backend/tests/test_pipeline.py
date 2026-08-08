@@ -406,8 +406,11 @@ def test_each_kind_groups_independently(
     baseline = baseline_response.json()
     baseline_cards = client.get(f"/jobs/{baseline['id']}/cards").json()
     counts = {"diagram": 0, "text_occlusion": 0}
+    baseline_labels: dict[str, list[str]] = {"diagram": [], "text_occlusion": []}
     for card in baseline_cards:
-        counts[str(card["note_type"])] += 1
+        kind = str(card["note_type"])
+        counts[kind] += 1
+        baseline_labels[kind].extend(card["occlusion"]["labels"])
     assert counts["diagram"] > 1 and counts["text_occlusion"] > 1, (
         "both kinds need several masks for grouping to be observable"
     )
@@ -437,6 +440,11 @@ def test_each_kind_groups_independently(
         "text_occlusion": 1 if text_mode == "grouped" else counts["text_occlusion"],
     }
     assert {kind: len(cards) for kind, cards in by_type.items()} == expected
+
+    # Grouping changes card packaging only; the selected masks are identical.
+    for kind, cards in by_type.items():
+        labels = [label for card in cards for label in card["occlusion"]["labels"]]  # type: ignore[index]
+        assert labels == baseline_labels[kind]
 
     grouped_fronts = {"diagram": "Name all labeled parts", "text_occlusion": "Fill in the blanks"}
     individual_fronts = {"diagram": "What is this?", "text_occlusion": "Fill in the blank"}

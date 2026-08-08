@@ -124,7 +124,7 @@ def _process_job(
     if options.text_card_mode is TextCardMode.TEXT_OCCLUSION:
         enter_stage(progress, JobStage.GENERATING_CARDS, page_count)
         text_pending = select_text_occlusions(
-            settings, image_dir, page_count, progress, ocr, texts, pdf_path
+            settings, image_dir, page_count, progress, ocr, texts
         )
         diagram_pages = shortlist_diagram_pages(image_dir, page_count, ocr)
     else:
