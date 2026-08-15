@@ -7,12 +7,26 @@ from app.services.text_occlusion.document_context import (
 from app.services.text_occlusion.factory import get_text_span_selector
 from app.services.text_occlusion.filters import AcceptedSpan, accept_spans
 from app.services.text_occlusion.mock import MockTextSpanSelector
-from app.services.text_occlusion.schemas import BatchSelection, SelectedSpan, SpanRef
+from app.services.text_occlusion.schemas import (
+    AuditDecision,
+    BatchAudit,
+    CandidateBatch,
+    CandidateSpan,
+    ModelSpanRef,
+    RefGroup,
+    SelectedSpan,
+    SpanRef,
+)
 
 __all__ = [
     "AcceptedSpan",
-    "BatchSelection",
+    "AuditDecision",
+    "BatchAudit",
+    "CandidateBatch",
+    "CandidateSpan",
     "MockTextSpanSelector",
+    "ModelSpanRef",
+    "RefGroup",
     "SelectedSpan",
     "SpanRef",
     "TextOcclusionError",

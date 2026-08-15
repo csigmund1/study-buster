@@ -23,8 +23,13 @@ from app.services.occlusion_pipeline import (
 )
 from app.services.text_occlusion import (
     AcceptedSpan,
-    BatchSelection,
+    AuditDecision,
+    BatchAudit,
+    CandidateBatch,
+    CandidateSpan,
     MockTextSpanSelector,
+    ModelSpanRef,
+    RefGroup,
     SelectedSpan,
     SpanRef,
     TextPage,
@@ -51,6 +56,8 @@ from app.services.text_occlusion.filters import (
 )
 from app.services.text_occlusion.spans import (
     boxes_for_span,
+    exact_occurrence_groups,
+    expand_exact_leakage,
     locate_phrase,
     ref_for_words,
     span_text,
@@ -100,8 +107,16 @@ def ref_for(line_index: int, phrase: str) -> SpanRef:
     return SpanRef(line_index=line_index, text=phrase)
 
 
+def model_ref_for(line_index: int, phrase: str) -> ModelSpanRef:
+    return ModelSpanRef(line_index=line_index, text=phrase)
+
+
 def span_for(line_index: int, phrase: str, page_number: int = 1) -> SelectedSpan:
     return SelectedSpan(page_number=page_number, refs=[ref_for(line_index, phrase)])
+
+
+def candidate_for(line_index: int, phrase: str, page_number: int = 1) -> CandidateSpan:
+    return CandidateSpan(page_number=page_number, refs=[model_ref_for(line_index, phrase)])
 
 
 # --- locate_phrase: addressing spans by text --------------------------------
@@ -192,6 +207,75 @@ def test_ref_for_words_sets_every_field() -> None:
 
     assert ref.line_index == 2
     assert ref.text == "renal corpuscle"
+    assert ref.word_start == 1
+    assert ref.word_count == 2
+
+
+def test_span_ref_requires_both_deterministic_word_offsets() -> None:
+    with pytest.raises(ValueError, match="provided together"):
+        SpanRef(line_index=0, text="renal", word_start=1)
+
+
+def test_anchored_refs_distinguish_identical_phrases_on_one_line() -> None:
+    line = make_line("preload rises while preload falls")
+    second = ref_for_words(line.words, line_index=0, start=3, count=1)
+
+    assert [word.text for word in words_for_ref(line, second)] == ["preload"]
+
+
+# --- deterministic exact-answer closure -------------------------------------
+
+
+def test_exact_occurrences_find_repetitions_on_the_same_line() -> None:
+    line = make_line("Law of the Heart defines output and law of the heart predicts filling")
+    groups = exact_occurrence_groups([line], [ref_for(0, "Law of the Heart")])
+
+    assert len(groups) == 2
+    assert [group[0].word_start for group in groups] == [0, 7]
+
+
+def test_exact_occurrences_fold_punctuation_case_and_hyphen_splitting() -> None:
+    lines = make_page(
+        "Length-dependent activation explains force",
+        "The LENGTH- dependent activation mechanism remains active",
+    )
+    groups = exact_occurrence_groups(
+        lines, [ref_for(0, "Length-dependent activation")]
+    )
+
+    assert len(groups) == 2
+    assert groups[1][0].word_count == 3
+
+
+def test_exact_occurrences_find_a_wrapped_repetition() -> None:
+    lines = make_page(
+        "The Frank-Starling mechanism explains output",
+        "Recall the Frank-Starling",
+        "mechanism during increased filling",
+    )
+    groups = exact_occurrence_groups(lines, [ref_for(0, "Frank-Starling mechanism")])
+
+    assert len(groups) == 2
+    assert [ref.line_index for ref in groups[1]] == [1, 2]
+
+
+def test_expand_exact_leakage_masks_answer_repeats_and_every_alias_repeat() -> None:
+    lines = make_page(
+        "Preload determines stroke volume",
+        "As preload or end-diastolic volume rises output increases",
+        "End-diastolic volume is also called filling volume",
+    )
+    span = span_for(0, "Preload")
+    expanded = expand_exact_leakage(
+        lines,
+        span,
+        alias_groups=[[ref_for(1, "end-diastolic volume")]],
+    )
+
+    assert expanded is not None
+    assert span_text(lines, expanded) == "Preload"
+    assert len(expanded.leakage_refs) == 3
+    assert all(ref.word_start is not None for ref in expanded.leakage_refs)
 
 
 # --- geometry -----------------------------------------------------------------
@@ -707,7 +791,7 @@ def test_shortlist_skips_a_missing_page_image(tmp_path: Path) -> None:
 
 
 class _FakeParseResponse:
-    def __init__(self, parsed_output: BatchSelection | None) -> None:
+    def __init__(self, parsed_output: Any | None) -> None:
         self.parsed_output = parsed_output
         self.usage = MagicMock(
             input_tokens=100,
@@ -717,7 +801,7 @@ class _FakeParseResponse:
         )
 
 
-def _capture_parse(captured: dict[str, Any], result: BatchSelection | None) -> Any:
+def _capture_parse(captured: dict[str, Any], result: Any | None) -> Any:
     def fake_parse(**kwargs: Any) -> _FakeParseResponse:
         captured.update(kwargs)
         return _FakeParseResponse(result)
@@ -743,7 +827,7 @@ def test_anthropic_selector_batches_pages_by_batch_pages(
 
     def fake_parse(**kwargs: Any) -> _FakeParseResponse:
         calls.append(kwargs)
-        return _FakeParseResponse(BatchSelection(spans=[]))
+        return _FakeParseResponse(CandidateBatch(spans=[]))
 
     monkeypatch.setattr(selector._client.messages, "parse", fake_parse)
 
@@ -760,7 +844,7 @@ def test_anthropic_selector_sends_a_low_resolution_preview_and_exact_ocr(
 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        selector._client.messages, "parse", _capture_parse(captured, BatchSelection(spans=[]))
+        selector._client.messages, "parse", _capture_parse(captured, CandidateBatch(spans=[]))
     )
 
     selector.select(pages)
@@ -773,6 +857,7 @@ def test_anthropic_selector_sends_a_low_resolution_preview_and_exact_ocr(
     with Image.open(BytesIO(image_bytes)) as preview:
         assert max(preview.size) <= 512
     assert any('[0] "cardiac output rises"' in block.get("text", "") for block in content)
+    assert captured["output_format"] is CandidateBatch
 
 
 def test_anthropic_selector_omits_chrome_and_low_confidence_but_keeps_indices(
@@ -797,7 +882,7 @@ def test_anthropic_selector_omits_chrome_and_low_confidence_but_keeps_indices(
 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        selector._client.messages, "parse", _capture_parse(captured, BatchSelection(spans=[]))
+        selector._client.messages, "parse", _capture_parse(captured, CandidateBatch(spans=[]))
     )
 
     selector.select(pages, chrome_lines)
@@ -824,8 +909,10 @@ def test_anthropic_selector_flattens_spans_across_batches(
     ]
 
     responses = [
-        BatchSelection(spans=[span_for(0, "alpha bravo", page_number=1)]),
-        BatchSelection(spans=[span_for(0, "delta echo", page_number=2)]),
+        CandidateBatch(spans=[candidate_for(0, "alpha bravo", page_number=1)]),
+        BatchAudit(decisions=[AuditDecision(candidate_index=0, keep=True)]),
+        CandidateBatch(spans=[candidate_for(0, "delta echo", page_number=2)]),
+        BatchAudit(decisions=[AuditDecision(candidate_index=0, keep=True)]),
     ]
 
     def fake_parse(**kwargs: Any) -> _FakeParseResponse:
@@ -848,7 +935,12 @@ def test_anthropic_selector_preserves_successful_batches_when_a_later_batch_fail
         _selector_page(tmp_path, 2, "delta echo foxtrot"),
     ]
     responses = [
-        _FakeParseResponse(BatchSelection(spans=[span_for(0, "alpha bravo", page_number=1)])),
+        _FakeParseResponse(
+            CandidateBatch(spans=[candidate_for(0, "alpha bravo", page_number=1)])
+        ),
+        _FakeParseResponse(
+            BatchAudit(decisions=[AuditDecision(candidate_index=0, keep=True)])
+        ),
         _FakeParseResponse(None),
     ]
 
@@ -859,6 +951,142 @@ def test_anthropic_selector_preserves_successful_batches_when_a_later_batch_fail
     spans = selector.select(pages)
 
     assert [span.page_number for span in spans] == [1]
+
+
+def test_anthropic_audit_is_text_only_and_adds_semantic_leakage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector = AnthropicTextSpanSelector("claude-haiku-4-5", batch_pages=10)
+    image_path = _make_page_image(tmp_path / "selector-pages", 1)
+    page = TextPage(
+        page_number=1,
+        image_path=image_path,
+        lines=make_page(
+            "Preload determines stroke volume",
+            "As preload (end-diastolic volume) rises output increases",
+        ),
+    )
+    calls: list[dict[str, Any]] = []
+
+    def fake_parse(**kwargs: Any) -> _FakeParseResponse:
+        calls.append(kwargs)
+        if kwargs["output_format"] is CandidateBatch:
+            return _FakeParseResponse(
+                CandidateBatch(spans=[candidate_for(0, "Preload")])
+            )
+        return _FakeParseResponse(
+            BatchAudit(
+                decisions=[
+                    AuditDecision(
+                        candidate_index=0,
+                        keep=True,
+                        additional_leakage=[
+                            RefGroup(refs=[model_ref_for(1, "end-diastolic volume")])
+                        ],
+                    )
+                ]
+            )
+        )
+
+    monkeypatch.setattr(selector._client.messages, "parse", fake_parse)
+
+    spans = selector.select([page])
+
+    assert len(calls) == 2
+    audit_call = calls[1]
+    assert audit_call["output_format"] is BatchAudit
+    assert all(
+        block["type"] == "text" for block in audit_call["messages"][0]["content"]
+    )
+    audit_text = audit_call["messages"][0]["content"][0]["text"]
+    assert audit_text.count("[[C0]]") == 2
+    assert "end-diastolic volume" in audit_text
+    assert len(spans) == 1
+    assert span_text(page.lines, spans[0]) == "Preload"
+    assert len(spans[0].leakage_refs) == 2
+
+
+def test_anthropic_auditor_can_drop_a_broad_sentence_mask(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector = AnthropicTextSpanSelector("claude-haiku-4-5", batch_pages=10)
+    page = _selector_page(
+        tmp_path,
+        1,
+        "There is evidence that effectiveness is attenuated in failing myocardium",
+    )
+    responses = [
+        CandidateBatch(
+            spans=[
+                candidate_for(
+                    0, "effectiveness is attenuated in failing myocardium"
+                )
+            ]
+        ),
+        BatchAudit(decisions=[AuditDecision(candidate_index=0, keep=False)]),
+    ]
+    monkeypatch.setattr(
+        selector._client.messages,
+        "parse",
+        lambda **kwargs: _FakeParseResponse(responses.pop(0)),
+    )
+
+    assert selector.select([page]) == []
+
+
+def test_anthropic_auditor_drops_a_candidate_with_unlocatable_leakage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector = AnthropicTextSpanSelector("claude-haiku-4-5", batch_pages=10)
+    page = _selector_page(tmp_path, 1, "Preload determines stroke volume")
+    responses = [
+        CandidateBatch(spans=[candidate_for(0, "Preload")]),
+        BatchAudit(
+            decisions=[
+                AuditDecision(
+                    candidate_index=0,
+                    keep=True,
+                    additional_leakage=[
+                        RefGroup(refs=[model_ref_for(0, "not actually on the slide")])
+                    ],
+                )
+            ]
+        ),
+    ]
+    monkeypatch.setattr(
+        selector._client.messages,
+        "parse",
+        lambda **kwargs: _FakeParseResponse(responses.pop(0)),
+    )
+
+    assert selector.select([page]) == []
+
+
+def test_anthropic_audit_fails_closed_when_any_candidate_decision_is_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selector = AnthropicTextSpanSelector("claude-haiku-4-5", batch_pages=10)
+    page = TextPage(
+        page_number=1,
+        image_path=_make_page_image(tmp_path / "selector-pages", 1),
+        lines=make_page(
+            "Preload determines stroke volume",
+            "Afterload determines ejection resistance",
+        ),
+    )
+    responses = [
+        CandidateBatch(
+            spans=[candidate_for(0, "Preload"), candidate_for(1, "Afterload")]
+        ),
+        BatchAudit(decisions=[AuditDecision(candidate_index=0, keep=True)]),
+    ]
+    monkeypatch.setattr(
+        selector._client.messages,
+        "parse",
+        lambda **kwargs: _FakeParseResponse(responses.pop(0)),
+    )
+
+    assert selector.select([page]) == []
 
 
 def test_anthropic_selector_rejects_non_positive_batch_size() -> None:
@@ -947,7 +1175,7 @@ def test_objectives_are_prepended_to_the_user_message(
 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        selector._client.messages, "parse", _capture_parse(captured, BatchSelection(spans=[]))
+        selector._client.messages, "parse", _capture_parse(captured, CandidateBatch(spans=[]))
     )
 
     selector.select(pages, objectives="1. Define the Frank-Starling mechanism.")
@@ -966,7 +1194,7 @@ def test_objectives_absent_leaves_the_user_message_listing_only(
 
     captured: dict[str, Any] = {}
     monkeypatch.setattr(
-        selector._client.messages, "parse", _capture_parse(captured, BatchSelection(spans=[]))
+        selector._client.messages, "parse", _capture_parse(captured, CandidateBatch(spans=[]))
     )
 
     selector.select(pages)

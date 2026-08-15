@@ -1,21 +1,20 @@
-"""Wire shapes for text-occlusion span selection.
+"""Wire and internal shapes for the text-occlusion quality pipeline.
 
-The selector is shown a low-resolution slide preview plus the OCR text itself and
-names spans by *phrase text inside a numbered OCR line*. A selected span owns its
-page number once; its refs therefore only need `(line_index, text)`. It never
-returns coordinates: geometry is derived deterministically in `spans.py` by
-locating each phrase among the line's OCR words and unioning their boxes.
+Both model passes name phrases by exact text inside numbered OCR lines. Internal
+refs may additionally carry deterministic OCR word offsets so repeated phrases
+on one line remain independently addressable. No model predicts coordinates:
+geometry is derived in `spans.py` by unioning the referenced OCR word boxes.
 
 The preview is layout context only. Because the model must select from the exact
 OCR text it was shown, every mask remains locatable without reconciling image
 transcription against OCR.
 """
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
-class SpanRef(BaseModel):
-    """One line-local phrase within the numbered OCR lines handed to the selector."""
+class ModelSpanRef(BaseModel):
+    """One exact line-local phrase returned by a model call."""
 
     line_index: int = Field(
         ge=0, description="Index into that page's numbered OCR line list."
@@ -24,6 +23,42 @@ class SpanRef(BaseModel):
         description="The phrase to hide, spelled exactly as it reads on that line. "
         "If the phrase wraps onto another line, give only this line's fragment here."
     )
+
+
+class SpanRef(ModelSpanRef):
+    """A model phrase, optionally anchored to an exact deterministic word range."""
+
+    word_start: int | None = Field(
+        default=None,
+        ge=0,
+        description="Deterministic word offset within the OCR line. Model selectors omit this.",
+    )
+    word_count: int | None = Field(
+        default=None,
+        ge=1,
+        description="Number of OCR words at word_start. Model selectors omit this.",
+    )
+
+    @model_validator(mode="after")
+    def validate_word_range(self) -> "SpanRef":
+        if (self.word_start is None) != (self.word_count is None):
+            raise ValueError("word_start and word_count must be provided together")
+        return self
+
+
+class CandidateSpan(BaseModel):
+    """One pedagogical target proposed by the visual selection pass."""
+
+    page_number: int = Field(ge=1, description="1-indexed page the target is on.")
+    refs: list[ModelSpanRef] = Field(
+        description="The answer occurrence: one ref per line it occupies, in reading order."
+    )
+
+
+class CandidateBatch(BaseModel):
+    """Every raw learning target proposed across one visual selection batch."""
+
+    spans: list[CandidateSpan] = Field(default_factory=list)
 
 
 class SelectedSpan(BaseModel):
@@ -45,7 +80,24 @@ class SelectedSpan(BaseModel):
     )
 
 
-class BatchSelection(BaseModel):
-    """One batch's selection result: every mask chosen across the batch's pages."""
+class RefGroup(BaseModel):
+    """One semantic alias or answer-revealing phrase, possibly line-wrapped."""
 
-    spans: list[SelectedSpan] = Field(default_factory=list)
+    refs: list[ModelSpanRef] = Field(
+        min_length=1,
+        description="One exact OCR ref per line occupied by this revealing phrase.",
+    )
+
+
+class AuditDecision(BaseModel):
+    """The text-only auditor's final decision for one numbered candidate."""
+
+    candidate_index: int = Field(ge=0)
+    keep: bool
+    additional_leakage: list[RefGroup] = Field(default_factory=list)
+
+
+class BatchAudit(BaseModel):
+    """One decision for every candidate submitted to the text-only audit."""
+
+    decisions: list[AuditDecision] = Field(default_factory=list)

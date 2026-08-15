@@ -1,9 +1,10 @@
 """Deterministic span location and span -> geometry mapping.
 
 A selector names a page once and identifies text within that page by
-`(line_index, text)`. Everything geometric happens here: each phrase is located
-among the line's OCR words, and a ref's box is the union of the word boxes it
-covers. The answer's refs and any repeated-answer leakage refs are all masked.
+`(line_index, text)`. This module anchors those phrases to OCR word ranges, finds
+every normalized slide-local repetition (including same-line and wrapped
+occurrences), and maps every final ref to geometry. The answer's refs and all
+exact or audited semantic leakage refs are masked together.
 
 `Box` rejects zero/negative extents, so every mapping here returns `None`
 rather than constructing a degenerate box (see plan §9).
@@ -15,6 +16,8 @@ from dataclasses import dataclass
 from app.models.occlusion import Box
 from app.services.diagram_detection.ocr import OcrItem, OcrWord, union_boxes
 from app.services.text_occlusion.schemas import SelectedSpan, SpanRef
+
+MAX_WRAPPED_OCCURRENCE_LINES = 3
 
 
 def _fold(text: str) -> str:
@@ -69,6 +72,19 @@ def locate_phrase(line: OcrItem, phrase: str) -> WordRange | None:
     return None
 
 
+def _resolved_range(line: OcrItem, ref: SpanRef) -> WordRange | None:
+    """Resolve a model phrase or an internally anchored deterministic ref."""
+    if ref.word_start is None or ref.word_count is None:
+        return locate_phrase(line, ref.text)
+    end = ref.word_start + ref.word_count
+    if end > len(line.words):
+        return None
+    covered = line.words[ref.word_start:end]
+    if _fold("".join(word.text for word in covered)) != _fold(ref.text):
+        return None
+    return WordRange(start=ref.word_start, count=ref.word_count)
+
+
 def line_for_ref(lines: list[OcrItem], ref: SpanRef) -> OcrItem | None:
     """The referenced line, or `None` when the index is out of range."""
     if 0 <= ref.line_index < len(lines):
@@ -83,7 +99,7 @@ def words_for_ref(line: OcrItem, ref: SpanRef) -> list[OcrWord]:
     dropped upstream rather than masked partially.
     """
     if ref.text.strip():
-        located = locate_phrase(line, ref.text)
+        located = _resolved_range(line, ref)
         if located is not None:
             return line.words[located.start : located.start + located.count]
     return []
@@ -135,4 +151,139 @@ def ref_for_words(words: list[OcrWord], line_index: int, start: int, count: int)
     return SpanRef(
         line_index=line_index,
         text=" ".join(word.text for word in covered),
+        word_start=start,
+        word_count=count,
+    )
+
+
+def _range_key(lines: list[OcrItem], ref: SpanRef) -> tuple[int, int, int] | None:
+    line = line_for_ref(lines, ref)
+    if line is None:
+        return None
+    located = _resolved_range(line, ref)
+    if located is None:
+        return None
+    return (ref.line_index, located.start, located.count)
+
+
+def _refs_key(lines: list[OcrItem], refs: list[SpanRef]) -> str | None:
+    parts: list[str] = []
+    for ref in refs:
+        line = line_for_ref(lines, ref)
+        if line is None:
+            return None
+        words = words_for_ref(line, ref)
+        if not words:
+            return None
+        parts.extend(word.text for word in words)
+    key = _fold("".join(parts))
+    return key or None
+
+
+def exact_occurrence_groups(
+    lines: list[OcrItem], refs: list[SpanRef]
+) -> list[list[SpanRef]]:
+    """Find every exact normalized occurrence of one ref group on a slide.
+
+    Matching uses the same punctuation/case/hyphen folding as normal ref
+    localization. Returned refs are anchored to exact OCR word ranges, which is
+    what lets two identical phrases on the same line receive separate masks.
+    A wrapped occurrence may consume the suffix of one line and the prefix of
+    up to two immediately following OCR lines.
+    """
+    key = _refs_key(lines, refs)
+    if key is None:
+        return []
+
+    found: list[list[SpanRef]] = []
+    seen: set[tuple[tuple[int, int, int], ...]] = set()
+    for start_line, line in enumerate(lines):
+        for start_word, word in enumerate(line.words):
+            if not _fold(word.text):
+                continue
+            accumulated = ""
+            pieces: list[tuple[int, int, int]] = []
+            matched: list[SpanRef] | None = None
+            stop = False
+            last_line = min(len(lines), start_line + MAX_WRAPPED_OCCURRENCE_LINES)
+            for line_index in range(start_line, last_line):
+                current = lines[line_index]
+                word_index = start_word if line_index == start_line else 0
+                while word_index < len(current.words) and not _fold(
+                    current.words[word_index].text
+                ):
+                    word_index += 1
+                if word_index >= len(current.words):
+                    stop = True
+                    break
+                piece_start = word_index
+                for index in range(word_index, len(current.words)):
+                    accumulated += _fold(current.words[index].text)
+                    if not key.startswith(accumulated):
+                        stop = True
+                        break
+                    if accumulated == key:
+                        ranges = [*pieces, (line_index, piece_start, index - piece_start + 1)]
+                        matched = [
+                            ref_for_words(lines[li].words, li, start, count)
+                            for li, start, count in ranges
+                        ]
+                        break
+                if stop or matched is not None:
+                    break
+                pieces.append(
+                    (line_index, piece_start, len(current.words) - piece_start)
+                )
+
+            if matched is None:
+                continue
+            group_key = tuple(
+                key_part
+                for ref in matched
+                if (key_part := _range_key(lines, ref)) is not None
+            )
+            if group_key and group_key not in seen:
+                seen.add(group_key)
+                found.append(matched)
+    return found
+
+
+def expand_exact_leakage(
+    lines: list[OcrItem],
+    span: SelectedSpan,
+    alias_groups: list[list[SpanRef]] | None = None,
+) -> SelectedSpan | None:
+    """Hide every exact occurrence of the answer and audited aliases.
+
+    The primary occurrence stays in ``refs`` so it remains the card's answer.
+    All other anchored occurrences are flattened into ``leakage_refs``. ``None``
+    means a supplied primary or alias group could not be resolved honestly.
+    """
+    sources = [span.refs, *(alias_groups or [])]
+    if span.leakage_refs:
+        sources.extend([[ref] for ref in span.leakage_refs])
+
+    primary_keys = {_range_key(lines, ref) for ref in span.refs}
+    if None in primary_keys or not primary_keys:
+        return None
+
+    leakage: list[SpanRef] = []
+    seen_ranges = set(primary_keys)
+    for source in sources:
+        occurrences = exact_occurrence_groups(lines, source)
+        if not occurrences:
+            return None
+        for occurrence in occurrences:
+            for ref in occurrence:
+                range_key = _range_key(lines, ref)
+                if range_key is None:
+                    return None
+                if range_key in seen_ranges:
+                    continue
+                seen_ranges.add(range_key)
+                leakage.append(ref)
+    return SelectedSpan(
+        page_number=span.page_number,
+        refs=span.refs,
+        leakage_refs=leakage,
     )
