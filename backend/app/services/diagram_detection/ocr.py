@@ -5,10 +5,9 @@ Provides page-normalized, top-left-origin text-item geometry; the semantic
 `anthropic.py`), never here.
 
 Two consumers share this module: diagram detection needs one box per recognized
-line, and text occlusion needs a box for an arbitrary *character range* inside a
-line. Vision gives both from a single recognition pass, so `extract()` computes
-per-word boxes eagerly (measured at ~1-2 ms/page) and no Objective-C object ever
-escapes this module.
+line, and text occlusion needs per-word boxes for exact OCR phrases. Vision gives
+both from a single recognition pass, so `extract()` computes word boxes eagerly
+(measured at ~1-2 ms/page) and no Objective-C object escapes this module.
 
 `AppleVisionOcr` caches by resolved image path so a page rendered once is never
 OCR'd twice, no matter how many features ask for it.
@@ -27,16 +26,9 @@ _RECOGNITION_LEVEL_ACCURATE = 0
 
 
 class OcrWord(BaseModel):
-    """One whitespace-delimited word within a recognized line.
-
-    `char_start`/`char_length` index into the parent `OcrItem.text`, so a caller
-    can name a span by character range and recover its geometry by unioning the
-    words it covers.
-    """
+    """One whitespace-delimited word within a recognized line."""
 
     text: str
-    char_start: int
-    char_length: int
     box: Box
 
 
@@ -51,11 +43,6 @@ class OcrItem(BaseModel):
     confidence: float = 1.0
     #: Per-word boxes, in text order. Empty for engines that cannot supply them.
     words: list[OcrWord] = Field(default_factory=list)
-    #: Set by text occlusion when this line's printed text is the lecturer's own
-    #: bold/italic emphasis (matched from the PDF font layer). OCR itself never
-    #: sets it — Apple Vision carries no font style — and other consumers (e.g.
-    #: diagram detection) ignore it.
-    emphasized: bool = False
 
 
 class OcrEngine(Protocol):
@@ -241,8 +228,6 @@ def _build_words(candidate: Any, text: str) -> list[OcrWord]:
         words.append(
             OcrWord(
                 text=text[char_start : char_start + char_length],
-                char_start=char_start,
-                char_length=char_length,
                 box=box,
             )
         )

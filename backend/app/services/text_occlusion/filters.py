@@ -1,11 +1,9 @@
 """Deterministic quality gate for selected text spans.
 
-Because the selector now picks phrases from the OCR text it was shown rather
-than a page image, every returned span is locatable by construction. What
-remains here is cheap correctness/sanity checking, not quality tuning: a
-selector may still hallucinate an index, name a confidently-garbled line, or
-propose overlapping/duplicate spans across one page's batch, and nothing here
-attempts to judge whether a span is a *good* card.
+Although a low-resolution preview informs selection, every returned phrase must
+come from the OCR text shown beside it and is therefore locatable by contract.
+This module keeps cheap correctness checks plus one narrow, slide-local
+near-duplicate merge; pedagogical quality remains the selector's responsibility.
 """
 
 from dataclasses import dataclass
@@ -16,6 +14,7 @@ from app.services.draft_validation import normalize_text
 from app.services.text_occlusion.document_context import is_chrome
 from app.services.text_occlusion.schemas import SelectedSpan
 from app.services.text_occlusion.spans import (
+    all_refs,
     boxes_for_span,
     line_for_ref,
     span_text,
@@ -27,11 +26,16 @@ from app.services.text_occlusion.spans import (
 MIN_LINE_CONFIDENCE = 0.5
 
 MIN_SPAN_WORDS = 1
-MAX_SPAN_WORDS = 5
+MAX_SPAN_WORDS = 12
 MIN_SPAN_CHARS = 3
 
 #: Loose backstop against one page runaway, not a tuned quality knob.
-MAX_SPANS_PER_PAGE = 25
+MAX_SPANS_PER_PAGE = 12
+
+#: Near-identical selections on one slide are one learning target. A later
+#: occurrence is merged into the earlier target's mask boxes instead of becoming
+#: a duplicate card or remaining visible as answer leakage.
+MAX_ANSWER_SIMILARITY = 0.6
 
 STOPWORDS = frozenset(
     {
@@ -54,7 +58,7 @@ class AcceptedSpan:
 
 def is_confident(lines: list[OcrItem], span: SelectedSpan) -> bool:
     """True when every line the span touches is above the confidence floor."""
-    refs_lines = [line_for_ref(lines, ref) for ref in span.refs]
+    refs_lines = [line_for_ref(lines, ref) for ref in all_refs(span)]
     if not refs_lines or any(line is None for line in refs_lines):
         return False
     return all(line.confidence >= MIN_LINE_CONFIDENCE for line in refs_lines if line)
@@ -71,7 +75,7 @@ def is_chrome_span(
     index. A span touching a mix of chrome and content lines is judged on its
     content lines only, so it is not rejected here.
     """
-    refs_lines = [line_for_ref(lines, ref) for ref in span.refs]
+    refs_lines = [line_for_ref(lines, ref) for ref in all_refs(span)]
     if not refs_lines or any(line is None for line in refs_lines):
         return False
     return all(is_chrome(line.text, chrome_lines) for line in refs_lines if line)
@@ -85,7 +89,7 @@ def is_locatable(lines: list[OcrItem], span: SelectedSpan) -> bool:
     not on the line — a garbled transcription — and the honest response is to
     drop the span rather than mask an approximation of it.
     """
-    for ref in span.refs:
+    for ref in all_refs(span):
         line = line_for_ref(lines, ref)
         if line is None or not words_for_ref(line, ref):
             return False
@@ -97,7 +101,7 @@ def word_count(text: str) -> int:
 
 
 def is_acceptable_size(text: str) -> bool:
-    """1-5 words, at least 3 non-space characters."""
+    """1-12 words, at least 3 non-space characters."""
     words = word_count(text)
     if not MIN_SPAN_WORDS <= words <= MAX_SPAN_WORDS:
         return False
@@ -107,7 +111,7 @@ def is_acceptable_size(text: str) -> bool:
 def covers_entire_line(lines: list[OcrItem], span: SelectedSpan) -> bool:
     """True when the span masks every word of every line it touches."""
     covered = False
-    for ref in span.refs:
+    for ref in all_refs(span):
         line = line_for_ref(lines, ref)
         if line is None or not line.words:
             return False
@@ -145,6 +149,26 @@ def _overlaps_accepted(boxes: list[Box], accepted: list[AcceptedSpan]) -> bool:
     )
 
 
+def answer_similarity(first: str, second: str) -> float:
+    """Token-set Jaccard similarity for slide-local concept deduplication."""
+    first_tokens = set(normalize_text(first).split())
+    second_tokens = set(normalize_text(second).split())
+    if not first_tokens or not second_tokens:
+        return 0.0
+    return len(first_tokens & second_tokens) / len(first_tokens | second_tokens)
+
+
+def _similar_accepted_index(text: str, accepted: list[AcceptedSpan]) -> int | None:
+    for index, existing in enumerate(accepted):
+        if answer_similarity(text, existing.answer) > MAX_ANSWER_SIMILARITY:
+            return index
+    return None
+
+
+def _merge_boxes(first: list[Box], second: list[Box]) -> list[Box]:
+    return [*first, *(box for box in second if box not in first)]
+
+
 def accept_spans(
     lines: list[OcrItem],
     spans: list[SelectedSpan],
@@ -157,7 +181,6 @@ def accept_spans(
     that yields no acceptable span simply produces no card.
     """
     accepted: list[AcceptedSpan] = []
-    seen: set[str] = set()
     for span in spans:
         if len(accepted) >= MAX_SPANS_PER_PAGE:
             break
@@ -177,11 +200,18 @@ def accept_spans(
         boxes = boxes_for_span(lines, span)
         if boxes is None:
             continue
+        similar_index = _similar_accepted_index(text, accepted)
+        if similar_index is not None:
+            existing = accepted[similar_index]
+            accepted[similar_index] = AcceptedSpan(
+                answer=existing.answer,
+                boxes=_merge_boxes(existing.boxes, boxes),
+            )
+            continue
         if _overlaps_accepted(boxes, accepted):
             continue
         key = normalize_text(text)
-        if not key or key in seen:
+        if not key:
             continue
-        seen.add(key)
         accepted.append(AcceptedSpan(answer=text, boxes=boxes))
     return accepted

@@ -27,8 +27,6 @@ from app.services.diagram_detection import DetectionPage, DiagramDetection, get_
 from app.services.diagram_detection.compose import compose_occlusion
 from app.services.diagram_detection.cropping import FULL_PAGE, derive_crop
 from app.services.diagram_detection.ocr import OcrEngine, OcrItem
-from app.services.document_processing import extract_page_styles
-from app.services.draft_validation import normalize_text
 from app.services.job_progress import JobProgress, enter_stage
 from app.services.occlusion_grouping import group_occlusions
 from app.services.text_occlusion import (
@@ -39,7 +37,6 @@ from app.services.text_occlusion import (
     detect_objectives,
     get_text_span_selector,
 )
-from app.services.text_occlusion.emphasis import annotate_emphasis
 from app.services.text_occlusion.filters import MIN_LINE_CONFIDENCE
 from app.storage import card_image_path
 
@@ -137,35 +134,6 @@ def _answer_text(occlusion: Occlusion) -> str:
     return ", ".join(occlusion.labels)
 
 
-def dedupe_answers_across_pages(pending: list[PendingOcclusion]) -> list[PendingOcclusion]:
-    """Drop occlusions whose answer an earlier one already asked for, job-wide.
-
-    `filters.accept_spans` dedupes only within a page — it is handed one page's
-    lines and cannot see the rest of the deck — but a lecture deck restates its
-    own key terms, so the same phrase is genuinely selectable on several slides.
-    One real-mode job carded `Frank-Starling mechanism` three times, from pages
-    5, 8, and 10.
-
-    Shaped after `draft_validation.validate_and_dedupe`, which does the same job
-    for the basic/cloze path: one pass over the accumulated list, normalized
-    keys, order preserved. Only the LATER occlusion is dropped, so the earliest
-    page — and within a page the selector's own preference ordering — wins.
-
-    Runs on ungrouped occlusions, one answer each, before `group_pending` merges
-    a page's masks into a single card.
-    """
-    seen: set[str] = set()
-    deduped: list[PendingOcclusion] = []
-    for item in pending:
-        key = normalize_text(_answer_text(item.occlusion))
-        if key and key in seen:
-            continue
-        if key:
-            seen.add(key)
-        deduped.append(item)
-    return deduped
-
-
 def _detect_occlusions(
     settings: Settings,
     image_dir: Path,
@@ -212,23 +180,22 @@ def select_text_occlusions(
     progress: JobProgress,
     ocr: OcrEngine,
     texts: list[str],
-    pdf_path: Path,
 ) -> list[PendingOcclusion]:
-    """Run batched, text-only span selection over every page, returning the
+    """Run batched visual-context + OCR span selection over every page, returning the
     pending text occlusions.
 
     Diagram detection is fully decoupled from this: it no longer reads a
     "labeled diagram" flag out of a text-occlusion response — see
     `shortlist_diagram_pages`.
 
-    Non-fatal: a failed selection call drops spans for whatever pages it
-    covered rather than failing the job — the batch is simply treated as
-    empty. Everything after selection is deterministic, so failures there are
-    bugs and are not swallowed.
+    Expected provider/parse failures are isolated inside the selector to the
+    affected batch. Unexpected failures propagate because everything after the
+    model boundary is deterministic and silently returning zero cards would
+    conceal a bug.
 
-    Answers are deduped across pages as well as within them: `accept_spans` sees
-    one page at a time, so the job-wide pass is `dedupe_answers_across_pages`
-    over the accumulated result.
+    Repeated concepts are consolidated within a slide by `accept_spans`, but
+    deliberately preserved across slides: repetition in a lecture often gives a
+    learner useful context rather than a duplicate card.
     """
     # OCR every page up front, in page order, so `detect_chrome_lines` can see
     # the whole deck's furniture before any page is selected. The engine caches
@@ -252,38 +219,24 @@ def select_text_occlusions(
     # is passed to the selector but never itself carded.
     objectives, objectives_pages = detect_objectives(texts)
 
-    # The lecturer's bold/italic emphasis, recovered from the PDF font layer and
-    # matched onto OCR lines so the selector can prioritize it. Best-effort: a
-    # PDF whose styles cannot be read simply yields no emphasis, never a failed
-    # job.
-    try:
-        page_styles = extract_page_styles(pdf_path)
-    except Exception:
-        page_styles = []
-
     pages = [
         TextPage(
             page_number=page_number,
-            lines=annotate_emphasis(
-                lines,
-                page_styles[page_number - 1] if page_number - 1 < len(page_styles) else [],
-            ),
+            image_path=image_dir / f"page_{page_number}.png",
+            lines=lines,
         )
         for page_number, lines in enumerate(pages_lines, start=1)
         if lines and page_number not in objectives_pages
     ]
 
     selector = get_text_span_selector(settings)
-    try:
-        spans = selector.select(pages, chrome_lines, objectives=objectives)
-    except Exception:  # selection is best-effort; a failure yields no spans at all
-        spans = []
+    spans = selector.select(pages, chrome_lines, objectives=objectives)
 
     spans_by_page: dict[int, list[SelectedSpan]] = {}
     for span in spans:
         if not span.refs:
             continue
-        spans_by_page.setdefault(span.refs[0].page_number, []).append(span)
+        spans_by_page.setdefault(span.page_number, []).append(span)
 
     pending: list[PendingOcclusion] = []
     for page_number in range(1, page_count + 1):
@@ -313,7 +266,7 @@ def select_text_occlusions(
             )
         progress.advance()
 
-    return dedupe_answers_across_pages(pending)
+    return pending
 
 
 def shortlist_diagram_pages(image_dir: Path, page_count: int, ocr: OcrEngine) -> list[int]:

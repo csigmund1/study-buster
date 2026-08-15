@@ -28,10 +28,10 @@ def _span_for_line(page_number: int, line_index: int, line: OcrItem) -> Selected
     words = line.words
     for count in _RUN_LENGTHS:
         for start in range(_SKIP_LEADING_WORDS, len(words) - count + 1):
-            ref = ref_for_words(words, page_number, line_index, start, count)
+            ref = ref_for_words(words, line_index, start, count)
             if not is_acceptable_size(ref.text) or is_stopword_only(ref.text):
                 continue
-            return SelectedSpan(refs=[ref], answer=ref.text)
+            return SelectedSpan(page_number=page_number, refs=[ref])
     return None
 
 

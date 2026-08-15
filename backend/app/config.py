@@ -44,7 +44,7 @@ class Settings:
     #: Span-selector implementation: "mock" or "anthropic".
     text_occlusion_selector: str
     text_occlusion_model: str
-    #: How many pages' OCR text are batched into one text-only selection call.
+    #: How many pages' low-resolution previews + OCR listings share one selection call.
     text_occlusion_batch_pages: int
 
 
